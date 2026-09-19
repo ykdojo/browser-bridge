@@ -13,9 +13,9 @@ const setShared = (s) => chrome.storage.session.set({ shared: [...s] });
 const getShareAll = async () => (await chrome.storage.local.get({ shareAll: true })).shareAll;
 
 async function refreshBadge(tabId) {
-  const all = await getShareAll();
-  const on = all || (await getShared()).has(tabId);
-  chrome.action.setBadgeText({ tabId, text: all ? "ALL" : on ? "ON" : "" });
+  // No badge in share-all mode (the default); ON marks shared tabs in per-tab mode.
+  const on = !(await getShareAll()) && (await getShared()).has(tabId);
+  chrome.action.setBadgeText({ tabId, text: on ? "ON" : "" });
   chrome.action.setBadgeBackgroundColor({ tabId, color: "#e2611a" });
 }
 
