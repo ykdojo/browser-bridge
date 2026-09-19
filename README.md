@@ -38,6 +38,25 @@ Any CDP client works, not just the MCP server. The scripts here talk to it direc
 
 An extension using `chrome.debugger` + a native messaging host avoids the Allow dialog and lets me enforce tab and origin scoping in code. Costs: a "started debugging this browser" infobar, a subset of CDP domains, one debugger client per tab, MV3 service worker reconnect logic. Native messaging is more robust than WebSocket for the bridge (keeps the service worker alive, no open localhost port). Loading it unpacked avoids Web Store review. WebMCP (site opt-in) and Gemini auto browse (closed to third parties) don't make this obsolete.
 
+## Chrome Bridge (my own extension + MCP server)
+
+Two pieces. Chrome extensions can only connect out, never be called from outside, so a local process is unavoidable. That process is the MCP server itself.
+
+- `extension/` - MV3, thin relay. Connects to `ws://127.0.0.1:17333`, forwards CDP commands to tabs through `chrome.debugger`. Pings every 20s to keep the service worker alive, retries every 30s via `chrome.alarms` when the server is not running.
+- `server/` - Node MCP server over stdio that also hosts the WebSocket. All logic lives here, so most changes need no extension reload. Tools: `list_tabs`, `new_tab`, `close_tab`, `navigate`, `snapshot`, `click`, `type`, `press_key`, `screenshot`, `evaluate`.
+
+Design choices:
+
+- **`chrome.debugger` over content scripts.** Trusted input events, accessibility tree, screenshots, works regardless of page CSP. Cost: the "started debugging this browser" bar while attached.
+- **WebSocket over native messaging.** Two-step install for other people later (add extension, run one command). Native messaging needs a per-OS host manifest.
+- **Tab scoping.** The agent only sees tabs I share by clicking the extension icon (badge shows ON), plus tabs it opens itself. Enforced in the extension, not in the model.
+- **Origin check instead of a token.** The manifest has a fixed `key`, so the unpacked extension ID is always `epjnmpnkphfbonblfmfeokijfhmjcfne`. The server only accepts WebSocket upgrades with that `chrome-extension://` Origin, which web pages and other extensions cannot forge. A local process can, so this is not a defense against malware already on the machine. The private key is in `.keys/` (gitignored).
+- **Snapshot first.** `snapshot` returns the accessibility tree as text with `[ref]` numbers (`backendDOMNodeId`); `click` and `type` take a ref and resolve it to coordinates with `DOM.getBoxModel`.
+
+Known gaps: one server per port, so a second Claude Code session fails to bind 17333. No per-origin allowlist or confirmations yet. No iframe handling.
+
+Setup: `cd server && npm install`, then `chrome://extensions` - Developer mode - Load unpacked - pick `extension/`. Registered in Claude Code with `claude mcp add -s user chrome-bridge -- node <repo>/server/index.js`.
+
 ## Scripts
 
 All run with Bun (`~/.bun/bin/bun run ...`).

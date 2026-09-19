@@ -1,0 +1,17 @@
+{
+  "name": "chrome-bridge-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "chrome-bridge-mcp": "index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ws": "^8.21.3",
+    "zod": "^4.6.5"
+  }
+}
