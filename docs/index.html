@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chrome Bridge</title>
+<link rel="icon" href="logo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#f7f6f4;--surface:#ffffff;--ink:#17140f;--ink2:#4a443b;--muted:#7a7267;--line:#e6e1d9;
+  --accent:#e2611a;--accent-ink:#b04a0e;--indigo:#5d5246;--band-a:#f0eeea;--band-b:#fdeedd;--code:#f3f0eb;--on-accent:#ffffff;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --ground:#12110f;--surface:#1b1917;--ink:#f4f1ec;--ink2:#cfc8bd;--muted:#9a9185;--line:#2e2a25;
+  --accent:#f8a058;--accent-ink:#fbb77c;--indigo:#b9ad9e;--band-a:#181614;--band-b:#261c12;--code:#161412;--on-accent:#1a1207;
+}}
+:root[data-theme="dark"]{
+  --ground:#12110f;--surface:#1b1917;--ink:#f4f1ec;--ink2:#cfc8bd;--muted:#9a9185;--line:#2e2a25;
+  --accent:#f8a058;--accent-ink:#fbb77c;--indigo:#b9ad9e;--band-a:#181614;--band-b:#261c12;--code:#161412;--on-accent:#1a1207;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--ground);color:var(--ink);font:400 17px/1.6 "IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;padding-inline:20px;padding-block:48px 80px}
+.wrap{max-width:720px;margin-inline:auto;display:flex;flex-direction:column;gap:56px}
+.wide{width:min(960px,100vw - 40px);margin-inline:calc((100% - min(960px,100vw - 40px))/2)}
+h1,h2,h3{font-family:"Bricolage Grotesque","IBM Plex Sans",system-ui,sans-serif;text-wrap:balance;margin:0;letter-spacing:-.015em}
+h1{font-size:clamp(34px,6vw,52px);font-weight:700;line-height:1.05}
+h2{font-size:26px;font-weight:700;line-height:1.2}
+h3{font-size:17px;font-weight:500}
+p{margin:0}
+section{display:flex;flex-direction:column;gap:16px}
+code,pre,.mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:.86em}
+code{background:var(--code);border:1px solid var(--line);border-radius:5px;padding:1px 5px;white-space:nowrap}
+a{color:var(--accent-ink)}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+header{display:flex;flex-direction:column;gap:20px}
+.brand{display:flex;align-items:center;gap:14px}
+.brand svg{width:56px;height:56px;flex:none;border-radius:13px}
+.brand span{font-family:"Bricolage Grotesque",sans-serif;font-weight:500;font-size:15px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:20px;line-height:1.5;color:var(--ink2);max-width:60ch}
+
+.diagram{background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow-x:auto}
+.diagram svg{display:block;min-width:760px;width:100%;height:auto}
+.d-band-a{fill:var(--band-a)}.d-band-b{fill:var(--band-b)}
+.d-node{fill:var(--surface);stroke:var(--line);stroke-width:1.5}
+.d-node-key{fill:var(--surface);stroke:var(--accent);stroke-width:2}
+.d-t{fill:var(--ink);font:600 16px "IBM Plex Sans",sans-serif}
+.d-s{fill:var(--muted);font:400 11.5px "IBM Plex Sans",sans-serif}
+.d-l{fill:var(--ink2);font:500 12px "IBM Plex Mono",monospace}
+.d-cap{fill:var(--muted);font:500 11.5px "Bricolage Grotesque",sans-serif;letter-spacing:.09em;text-transform:uppercase}
+.d-link{stroke:var(--muted);stroke-width:2;fill:none}
+.d-arch{stroke:var(--accent);stroke-width:4;fill:none;stroke-linecap:round}
+.d-sus{stroke:var(--accent);stroke-width:2;opacity:.55}
+.d-dot{fill:var(--accent)}
+.d-arrow{fill:var(--muted)}
+.d-arch-l{fill:var(--accent-ink);font:500 12.5px "IBM Plex Sans",sans-serif}
+figcaption{font-size:14.5px;color:var(--muted);padding:0 4px}
+figure{margin:0;display:flex;flex-direction:column;gap:12px}
+
+ol.steps{margin:0;padding:0;list-style:none;counter-reset:s;display:flex;flex-direction:column;gap:0;border-left:2px solid var(--line);margin-left:13px}
+ol.steps li{counter-increment:s;position:relative;padding:0 0 22px 30px}
+ol.steps li:last-child{padding-bottom:0}
+ol.steps li::before{content:counter(s);position:absolute;left:-14px;top:0;width:26px;height:26px;border-radius:50%;background:var(--accent);color:var(--on-accent);font:600 13px/26px "IBM Plex Mono",monospace;text-align:center}
+ol.steps b{font-weight:600}
+ol.steps span{display:block;color:var(--ink2);font-size:16px}
+
+pre{margin:0;background:var(--code);border:1px solid var(--line);border-radius:12px;padding:16px 18px;overflow-x:auto;line-height:1.55;color:var(--ink2);font-size:13.5px}
+pre .r{color:var(--accent-ink);font-weight:500}
+pre .k{color:var(--indigo)}
+
+.tools{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:15.5px}
+th,td{text-align:left;padding:10px 16px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+th{font:500 12px "Bricolage Grotesque",sans-serif;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+td:first-child{white-space:nowrap}
+td code{border:0;background:none;padding:0;color:var(--accent-ink);font-weight:500}
+
+.modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.mode{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px;display:flex;flex-direction:column;gap:8px}
+.mode p{font-size:16px;color:var(--ink2)}
+.badge{display:inline-block;background:var(--accent);color:var(--on-accent);font:600 11px/1 "IBM Plex Mono",monospace;padding:4px 6px;border-radius:4px;margin-right:8px;vertical-align:2px}
+
+
+dl{margin:0;display:grid;grid-template-columns:1fr;gap:18px}
+dt{font-weight:600}
+dd{margin:2px 0 0;color:var(--ink2);font-size:16px}
+ul.plain{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;color:var(--ink2);font-size:16px}
+footer{color:var(--muted);font-size:14.5px;border-top:1px solid var(--line);padding-top:20px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 128 128" role="img" aria-label="Chrome Bridge logo"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f9a65a"/><stop offset="1" stop-color="#e2611a"/></linearGradient></defs><rect width="128" height="128" rx="28" fill="url(#lg)"/><g transform="translate(0 -8)"><g fill="none" stroke="#fff" stroke-linecap="round"><path d="M28 86 Q64 22 100 86" stroke-width="9"/><path d="M46 62V86M64 54V86M82 62V86" stroke-width="5" opacity=".85"/><path d="M18 86H110" stroke-width="9"/></g><circle cx="18" cy="86" r="8" fill="#fff"/><circle cx="110" cy="86" r="8" fill="#fff"/></g></svg>
+    <span>Chrome Bridge</span>
+  </div>
+  <h1>Let an AI agent use the Chrome you are already logged into.</h1>
+  <p class="lede">Browser automation usually starts a fresh, logged-out browser. Chrome Bridge is a small extension plus a local MCP server that gives Claude Code, or any other MCP client, the tabs in your real Chrome instead.</p>
+</header>
+
+<figure class="wide">
+  <div class="diagram">
+    <svg viewBox="0 0 960 300" role="img" aria-label="An AI agent talks to the MCP server over stdio. The extension connects out to the MCP server over a WebSocket on 127.0.0.1 port 17333. The extension controls your tabs through chrome.debugger.">
+      <rect class="d-band-a" x="0" y="0" width="470" height="300"/>
+      <rect class="d-band-b" x="470" y="0" width="490" height="300"/>
+      <text class="d-cap" x="24" y="32">Your machine, outside Chrome</text>
+      <text class="d-cap" x="494" y="32">Inside Chrome</text>
+
+      <!-- the bridge -->
+      <path class="d-arch" d="M352 140 Q480 28 608 140"/>
+      <path class="d-sus" d="M416 96V140M480 84V182M544 96V140"/>
+      <circle class="d-dot" cx="352" cy="140" r="6"/><circle class="d-dot" cx="608" cy="140" r="6"/>
+      <text class="d-arch-l" x="480" y="64" text-anchor="middle">the extension dials out</text>
+
+      <!-- links along the deck -->
+      <path class="d-link" d="M214 182H250"/><path class="d-arrow" d="M250 176l10 6-10 6z"/><path class="d-arrow" d="M214 176l-10 6 10 6z"/>
+      <path class="d-link" d="M442 182H518"/>
+      <path class="d-link" d="M710 182H746"/><path class="d-arrow" d="M746 176l10 6-10 6z"/><path class="d-arrow" d="M710 176l-10 6 10 6z"/>
+
+      <rect class="d-node" x="24" y="140" width="176" height="84" rx="12"/>
+      <text class="d-t" x="112" y="176" text-anchor="middle">AI agent</text>
+      <text class="d-s" x="112" y="199" text-anchor="middle">Claude Code, or any MCP client</text>
+
+      <rect class="d-node-key" x="264" y="140" width="176" height="84" rx="12"/>
+      <text class="d-t" x="352" y="176" text-anchor="middle">MCP server</text>
+      <text class="d-s" x="352" y="199" text-anchor="middle">Node. All the logic lives here</text>
+
+      <rect class="d-node-key" x="520" y="140" width="176" height="84" rx="12"/>
+      <text class="d-t" x="608" y="176" text-anchor="middle">Extension</text>
+      <text class="d-s" x="608" y="199" text-anchor="middle">Thin relay, Manifest V3</text>
+
+      <rect class="d-node" x="760" y="140" width="176" height="84" rx="12"/>
+      <text class="d-t" x="848" y="176" text-anchor="middle">Your tabs</text>
+      <text class="d-s" x="848" y="199" text-anchor="middle">Real logins and cookies</text>
+
+      <text class="d-l" x="232" y="256" text-anchor="middle">MCP over stdio</text>
+      <text class="d-l" x="480" y="256" text-anchor="middle">WebSocket</text>
+      <text class="d-l" x="480" y="274" text-anchor="middle">127.0.0.1:17333</text>
+      <text class="d-l" x="728" y="256" text-anchor="middle">chrome.debugger</text>
+      <text class="d-l" x="728" y="274" text-anchor="middle">(DevTools Protocol)</text>
+    </svg>
+  </div>
+  <figcaption>Nothing outside Chrome can call into an extension. An extension can only connect out, so the extension opens the WebSocket and the MCP server waits for it. That one connection is the bridge.</figcaption>
+</figure>
+
+<section>
+  <h2>What happens when the agent clicks a button</h2>
+  <ol class="steps">
+    <li><b>The agent asks for a snapshot.</b><span>The server sends <code>Accessibility.getFullAXTree</code> across the bridge and turns the result into indented text. Every element gets a number in brackets.</span></li>
+    <li><b>The agent picks a number.</b><span>It calls <code>click</code> with that ref. No screenshots or pixel guessing needed.</span></li>
+    <li><b>The server finds where the element is.</b><span><code>DOM.scrollIntoViewIfNeeded</code>, then <code>DOM.getBoxModel</code> to get the center point.</span></li>
+    <li><b>Chrome performs a real click.</b><span><code>Input.dispatchMouseEvent</code> sends move, press and release. The page sees a trusted event, the same as a person clicking.</span></li>
+  </ol>
+</section>
+
+<section>
+  <h2>What the agent sees</h2>
+  <p>This is real <code>snapshot</code> output from a page in my browser. It is the page's accessibility tree, the same structure a screen reader uses.</p>
+<pre><span class="r">[5987]</span> <span class="k">RootWebArea</span> "Build Day room"
+  <span class="r">[5995]</span> <span class="k">main</span>
+    <span class="r">[5996]</span> <span class="k">heading</span> "Who is in the room"
+    <span class="r">[5997]</span> <span class="k">paragraph</span>
+      <span class="r">[5861]</span> <span class="k">StaticText</span> "Vancouver | Claude Code Build Day - Sep 19, 2026. ..."
+    <span class="r">[6026]</span> <span class="k">heading</span> "The 30, by what they do"
+    <span class="r">[6030]</span> <span class="k">heading</span> "Engineering 10"
+    <span class="r">[6104]</span> <span class="k">heading</span> "Claude Code experience"</pre>
+</section>
+
+<section>
+  <h2>The ten tools</h2>
+  <div class="tools">
+    <table>
+      <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td><code>list_tabs</code></td><td>Tabs the agent can see, and whether each one can be controlled</td></tr>
+        <tr><td><code>new_tab</code></td><td>Open a URL in a new tab, logged in as you</td></tr>
+        <tr><td><code>close_tab</code></td><td>Close a tab</td></tr>
+        <tr><td><code>navigate</code></td><td>Go to a URL and wait for the page to load</td></tr>
+        <tr><td><code>snapshot</code></td><td>Accessibility tree as text, with a ref on every element</td></tr>
+        <tr><td><code>click</code></td><td>Click a ref, or x and y coordinates</td></tr>
+        <tr><td><code>type</code></td><td>Type into the focused element or a ref, optionally press Enter</td></tr>
+        <tr><td><code>press_key</code></td><td>Enter, Tab, Escape, arrows, single characters</td></tr>
+        <tr><td><code>screenshot</code></td><td>JPEG of the visible page, for when layout matters</td></tr>
+        <tr><td><code>evaluate</code></td><td>Run JavaScript in the page and get the result back</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Which tabs the agent gets</h2>
+  <div class="modes">
+    <div class="mode"><h3><span class="badge">ALL</span>Share all tabs</h3><p>The default. Every open tab is available. Right-click the extension icon to turn it off.</p></div>
+    <div class="mode"><h3><span class="badge">ON</span>Per-tab sharing</h3><p>The agent only gets tabs where I clicked the icon, plus tabs it opened itself. The extension enforces this, not the model.</p></div>
+  </div>
+  <p>Chrome's own pages, like <code>chrome://extensions</code>, show up in the list but cannot be read or controlled. Chrome does not allow it.</p>
+</section>
+
+<section>
+  <h2>Why it is built this way</h2>
+  <dl>
+    <div><dt>chrome.debugger instead of content scripts</dt><dd>It gives trusted input events, the accessibility tree and screenshots, and it works on any site. The cost is a "started debugging this browser" bar while it is attached.</dd></div>
+    <div><dt>A WebSocket instead of native messaging</dt><dd>Installing it stays a two-step job: add the extension, run one command. Native messaging needs a manifest file installed per operating system.</dd></div>
+    <div><dt>A thin extension</dt><dd>The extension only relays commands. The logic is in the server, so most changes need no extension reload.</dd></div>
+    <div><dt>Several agent sessions at once</dt><dd>The first server to start owns the port and the extension connection. Later ones join it as peers and get relayed. If the first one exits, a peer takes over and the extension reconnects in about two seconds.</dd></div>
+  </dl>
+</section>
+
+<section>
+  <h2>What keeps it safe, and what does not</h2>
+  <ul class="plain">
+    <li>The server listens on <code>127.0.0.1</code> only and accepts a WebSocket only from this extension's ID. Browsers always send a truthful Origin header, so web pages and other extensions are rejected.</li>
+    <li>A program already running on the machine could fake that header. This is not a defense against malware.</li>
+    <li>In share-all mode, any page the agent reads could try to steer it toward other logged-in tabs. Per-tab sharing is the fallback for sensitive work. There are no confirmation prompts yet.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Setup</h2>
+  <ol class="steps">
+    <li><b>Install the server's dependencies.</b><span><code>cd server &amp;&amp; npm install</code></span></li>
+    <li><b>Load the extension.</b><span>Open <code>chrome://extensions</code>, turn on Developer mode, choose "Load unpacked" and pick the <code>extension</code> folder.</span></li>
+    <li><b>Register the server with the agent.</b><span><code>claude mcp add -s user chrome-bridge -- node &lt;repo&gt;/server/index.js</code></span></li>
+  </ol>
+</section>
+
+<footer>Built on Sep 19, 2026 at the Vancouver Claude Code Build Day.</footer>
+</div>
+</body>
+</html>

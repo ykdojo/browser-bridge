@@ -16,7 +16,7 @@ async function refreshBadge(tabId) {
   const all = await getShareAll();
   const on = all || (await getShared()).has(tabId);
   chrome.action.setBadgeText({ tabId, text: all ? "ALL" : on ? "ON" : "" });
-  chrome.action.setBadgeBackgroundColor({ tabId, color: "#2a78d6" });
+  chrome.action.setBadgeBackgroundColor({ tabId, color: "#e2611a" });
 }
 
 async function share(tabId, on) {

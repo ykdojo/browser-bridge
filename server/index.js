@@ -101,16 +101,17 @@ async function snapshot(tabId) {
   const { nodes } = await cdp(tabId, "Accessibility.getFullAXTree");
   const byId = new Map(nodes.map((n) => [n.nodeId, n]));
   const lines = [];
-  const walk = (n, depth) => {
+  // parentName: skip StaticText that only repeats the name of the element it sits in
+  const walk = (n, depth, parentName = "") => {
     const role = n.role?.value ?? "";
     const name = (n.name?.value ?? "").trim();
-    const show = !n.ignored && !SKIP.has(role) && !(role === "StaticText" && !name);
+    const show = !n.ignored && !SKIP.has(role) && !(role === "StaticText" && (!name || parentName.includes(name)));
     if (show) {
       const value = n.value?.value ? ` value="${String(n.value.value).slice(0, 80)}"` : "";
       const ref = n.backendDOMNodeId ? `[${n.backendDOMNodeId}] ` : "";
       lines.push(`${"  ".repeat(depth)}${ref}${role}${name ? ` "${name.slice(0, 120)}"` : ""}${value}`);
     }
-    for (const c of n.childIds ?? []) byId.has(c) && walk(byId.get(c), show ? depth + 1 : depth);
+    for (const c of n.childIds ?? []) byId.has(c) && walk(byId.get(c), show ? depth + 1 : depth, show ? name : parentName);
   };
   const root = nodes.find((n) => !n.parentId) ?? nodes[0];
   if (root) walk(root, 0);
@@ -154,8 +155,11 @@ const tool = (name, description, shape, fn) =>
 const tabId = z.number().int().describe("Tab id from list_tabs");
 const ref = z.number().int().describe("Element ref: the [number] shown in snapshot output");
 
-tool("list_tabs", "List the tabs available to the agent. By default that is every open tab; if the user switched to per-tab sharing, only tabs they shared by clicking the Chrome Bridge icon.", {}, async () =>
-  text(await call({ type: "tabs.list" })));
+tool("list_tabs", "List the tabs available to the agent. By default that is every open tab; if the user switched to per-tab sharing, only tabs they shared by clicking the Chrome Bridge icon. Tabs with controllable: false (browser pages) can be seen but not read or acted on.", {}, async () => {
+  // Chrome refuses debugger attach on its own pages and the Web Store: visible, not controllable.
+  const tabs = await call({ type: "tabs.list" });
+  return text(tabs.map((t) => ({ ...t, controllable: /^(https?|file):/.test(t.url) && !/^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/.test(t.url) })));
+});
 
 tool("new_tab", "Open a new tab in the user's logged-in Chrome. The new tab is always available to the agent.", { url: z.string() }, async ({ url }) =>
   text(await call({ type: "tabs.create", url })));
