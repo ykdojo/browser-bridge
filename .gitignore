@@ -1,0 +1,4 @@
+demo/
+*.sock
+guests.json
+going.json
