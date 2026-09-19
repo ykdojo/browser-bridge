@@ -79,10 +79,6 @@ th{font:500 12px "Bricolage Grotesque",sans-serif;letter-spacing:.09em;text-tran
 td:first-child{white-space:nowrap}
 td code{border:0;background:none;padding:0;color:var(--accent-ink);font-weight:500}
 
-.modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
-.mode{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px;display:flex;flex-direction:column;gap:8px}
-.mode p{font-size:16px;color:var(--ink2)}
-.badge{display:inline-block;background:var(--accent);color:var(--on-accent);font:600 11px/1 "IBM Plex Mono",monospace;padding:4px 6px;border-radius:4px;margin-right:8px;vertical-align:2px}
 
 
 dl{margin:0;display:grid;grid-template-columns:1fr;gap:18px}
@@ -195,11 +191,7 @@ footer{color:var(--muted);font-size:14.5px;border-top:1px solid var(--line);padd
 
 <section>
   <h2>Which tabs the agent gets</h2>
-  <div class="modes">
-    <div class="mode"><h3>Share all tabs</h3><p>The default. Every open tab is available. Right-click the extension icon to turn it off.</p></div>
-    <div class="mode"><h3><span class="badge">ON</span>Per-tab sharing</h3><p>The agent only gets tabs where I clicked the icon, plus tabs it opened itself. The extension enforces this, not the model.</p></div>
-  </div>
-  <p>Chrome's own pages, like <code>chrome://extensions</code>, show up in the list but cannot be read or controlled. Chrome does not allow it.</p>
+  <p>All of them. Every open tab in the browser is available, with no per-tab setup. Chrome's own pages, like <code>chrome://extensions</code>, show up in the list but cannot be read or controlled. Chrome does not allow it.</p>
 </section>
 
 <section>
@@ -217,7 +209,7 @@ footer{color:var(--muted);font-size:14.5px;border-top:1px solid var(--line);padd
   <ul class="plain">
     <li>The server listens on <code>127.0.0.1</code> only and accepts a WebSocket only from this extension's ID. Browsers always send a truthful Origin header, so web pages and other extensions are rejected.</li>
     <li>A program already running on the machine could fake that header. This is not a defense against malware.</li>
-    <li>In share-all mode, any page the agent reads could try to steer it toward other logged-in tabs. Per-tab sharing is the fallback for sensitive work. There are no confirmation prompts yet.</li>
+    <li>The agent can reach every logged-in tab, so any page it reads could try to steer it toward the others. There is no per-tab scoping and there are no confirmation prompts yet.</li>
   </ul>
 </section>
 

@@ -155,18 +155,18 @@ const tool = (name, description, shape, fn) =>
 const tabId = z.number().int().describe("Tab id from list_tabs");
 const ref = z.number().int().describe("Element ref: the [number] shown in snapshot output");
 
-tool("list_tabs", "List the tabs available to the agent. By default that is every open tab; if the user switched to per-tab sharing, only tabs they shared by clicking the Chrome Bridge icon. Tabs with controllable: false (browser pages) can be seen but not read or acted on.", {}, async () => {
+tool("list_tabs", "List every open tab in the user's Chrome. Tabs with controllable: false (browser pages like chrome://) can be seen but not read or acted on.", {}, async () => {
   // Chrome refuses debugger attach on its own pages and the Web Store: visible, not controllable.
   const tabs = await call({ type: "tabs.list" });
   return text(tabs.map((t) => ({ ...t, controllable: /^(https?|file):/.test(t.url) && !/^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/.test(t.url) })));
 });
 
-tool("new_tab", "Open a new tab in the user's logged-in Chrome. The new tab is always available to the agent.", { url: z.string() }, async ({ url }) =>
+tool("new_tab", "Open a new tab in the user's logged-in Chrome.", { url: z.string() }, async ({ url }) =>
   text(await call({ type: "tabs.create", url })));
 
-tool("close_tab", "Close a shared tab.", { tabId }, async ({ tabId }) => text(await call({ type: "tabs.close", tabId })));
+tool("close_tab", "Close a tab.", { tabId }, async ({ tabId }) => text(await call({ type: "tabs.close", tabId })));
 
-tool("navigate", "Navigate a shared tab to a URL and wait for it to load.", { tabId, url: z.string() }, async ({ tabId, url }) => {
+tool("navigate", "Navigate a tab to a URL and wait for it to load.", { tabId, url: z.string() }, async ({ tabId, url }) => {
   await cdp(tabId, "Page.enable");
   const r = await cdp(tabId, "Page.navigate", { url });
   if (r.errorText) throw new Error(r.errorText);
