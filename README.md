@@ -49,11 +49,12 @@ Design choices:
 
 - **`chrome.debugger` over content scripts.** Trusted input events, accessibility tree, screenshots, works regardless of page CSP. Cost: the "started debugging this browser" bar while attached.
 - **WebSocket over native messaging.** Two-step install for other people later (add extension, run one command). Native messaging needs a per-OS host manifest.
-- **Tab scoping.** The agent only sees tabs I share by clicking the extension icon (badge shows ON), plus tabs it opens itself. Enforced in the extension, not in the model.
+- **Tab scoping.** Shares all tabs by default (badge shows ALL) because clicking per tab got annoying. Right-click the icon and untick "Share all tabs" for per-tab mode: then the agent only sees tabs I share by clicking the icon (badge ON), plus tabs it opens itself. Enforced in the extension, not in the model.
+- **Multiple sessions.** The first server to start owns port 17333 and the extension connection. Later servers join it as peers (no Origin + `x-bridge-peer` header) and get relayed. If the primary exits, a peer takes over the port and the extension reconnects within about 2s.
 - **Origin check instead of a token.** The manifest has a fixed `key`, so the unpacked extension ID is always `epjnmpnkphfbonblfmfeokijfhmjcfne`. The server only accepts WebSocket upgrades with that `chrome-extension://` Origin, which web pages and other extensions cannot forge. A local process can, so this is not a defense against malware already on the machine. The private key is in `.keys/` (gitignored).
 - **Snapshot first.** `snapshot` returns the accessibility tree as text with `[ref]` numbers (`backendDOMNodeId`); `click` and `type` take a ref and resolve it to coordinates with `DOM.getBoxModel`.
 
-Known gaps: one server per port, so a second Claude Code session fails to bind 17333. No per-origin allowlist or confirmations yet. No iframe handling.
+Known gaps: no per-origin allowlist or confirmations yet. No iframe handling. Sessions share tabs with no locking between them.
 
 Setup: `cd server && npm install`, then `chrome://extensions` - Developer mode - Load unpacked - pick `extension/`. Registered in Claude Code with `claude mcp add -s user chrome-bridge -- node <repo>/server/index.js`.
 

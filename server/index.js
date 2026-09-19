@@ -3,7 +3,7 @@
 // extension. The extension connects out to us; we send it CDP commands.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { WebSocketServer } from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
 const PORT = Number(process.env.BRIDGE_PORT ?? 17333);
@@ -11,47 +11,86 @@ const EXTENSION_ID = process.env.BRIDGE_EXTENSION_ID ?? "epjnmpnkphfbonblfmfeoki
 const log = (...a) => console.error("[chrome-bridge]", ...a); // stdout belongs to MCP
 
 // ---- extension link -------------------------------------------------------
-let ext = null;
-let portError = null;
+// The first server to start owns the port and the extension connection (primary).
+// Later servers (other agent sessions) connect to it as peers and get relayed.
+// If the primary exits, a peer takes over the port and the extension reconnects.
+const NOT_CONNECTED = "Chrome Bridge extension is not connected. Make sure Chrome is open and the extension is loaded, then retry in a few seconds.";
+let ext = null; // primary: the extension's socket
+let upstream = null; // peer: socket to the primary
 let nextId = 0;
 const pending = new Map();
 
-const wss = new WebSocketServer({
-  host: "127.0.0.1",
-  port: PORT,
-  // Browsers always send a truthful Origin, so this blocks web pages and other extensions.
-  verifyClient: ({ origin }) => origin === `chrome-extension://${EXTENSION_ID}`,
-});
-wss.on("error", (e) => {
-  portError = e.code === "EADDRINUSE" ? `Port ${PORT} is in use, probably by another chrome-bridge session.` : String(e);
-  log(portError);
-});
-wss.on("connection", (sock) => {
-  ext = sock;
-  log("extension connected");
-  sock.on("message", (data) => {
-    const m = JSON.parse(data);
-    const p = pending.get(m.id);
-    if (!p) return; // pings
-    pending.delete(m.id);
-    m.error ? p.reject(new Error(m.error)) : p.resolve(m.result);
-  });
-  sock.on("close", () => {
-    if (ext === sock) ext = null;
-    log("extension disconnected");
-  });
-});
+function settle(data) {
+  const m = JSON.parse(data);
+  const p = pending.get(m.id);
+  if (!p) return; // pings
+  pending.delete(m.id);
+  m.error ? p.reject(new Error(m.error)) : p.resolve(m.result);
+}
 
 function call(msg, timeoutMs = 30000) {
-  if (portError) return Promise.reject(new Error(portError));
-  if (!ext) return Promise.reject(new Error("Chrome Bridge extension is not connected. Make sure Chrome is open and the extension is loaded, then retry in a few seconds."));
+  const sock = ext ?? upstream;
+  if (!sock || sock.readyState !== 1) return Promise.reject(new Error(NOT_CONNECTED));
   return new Promise((resolve, reject) => {
     const id = ++nextId;
     const t = setTimeout(() => pending.delete(id) && reject(new Error("timed out waiting for the extension")), timeoutMs);
     pending.set(id, { resolve: (v) => (clearTimeout(t), resolve(v)), reject: (e) => (clearTimeout(t), reject(e)) });
-    ext.send(JSON.stringify({ id, ...msg }));
+    sock.send(JSON.stringify({ ...msg, id }));
   });
 }
+
+function start() {
+  const wss = new WebSocketServer({
+    host: "127.0.0.1",
+    port: PORT,
+    // Browsers always send a truthful Origin, so this blocks web pages and other extensions.
+    // Peers are local non-browser processes: no Origin, plus our header.
+    verifyClient: ({ origin, req }) => origin === `chrome-extension://${EXTENSION_ID}` || (!origin && req.headers["x-bridge-peer"] === "1"),
+  });
+  wss.on("listening", () => log(`primary, waiting for extension on ws://127.0.0.1:${PORT}`));
+  wss.on("error", (e) => {
+    wss.close();
+    if (e.code === "EADDRINUSE") return joinAsPeer();
+    log(String(e));
+    setTimeout(start, 2000);
+  });
+  wss.on("connection", (sock, req) => {
+    if (req.headers["x-bridge-peer"] === "1") {
+      sock.on("message", async (data) => {
+        const { id, ...msg } = JSON.parse(data);
+        try {
+          sock.send(JSON.stringify({ id, result: await call(msg) }));
+        } catch (e) {
+          sock.send(JSON.stringify({ id, error: String(e?.message ?? e) }));
+        }
+      });
+      return;
+    }
+    ext = sock;
+    log("extension connected");
+    sock.on("message", settle);
+    sock.on("close", () => {
+      if (ext === sock) ext = null;
+      log("extension disconnected");
+    });
+  });
+}
+
+function joinAsPeer() {
+  const sock = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { "x-bridge-peer": "1" } });
+  sock.on("open", () => {
+    upstream = sock;
+    log("peer of an existing chrome-bridge server");
+  });
+  sock.on("message", settle);
+  sock.on("error", () => {});
+  sock.on("close", () => {
+    if (upstream === sock) upstream = null;
+    setTimeout(start, 200 + Math.random() * 800); // primary may be gone: try to take over
+  });
+}
+start();
+
 const cdp = (tabId, method, params) => call({ type: "cdp", tabId, method, params });
 
 // ---- page helpers ---------------------------------------------------------
@@ -115,10 +154,10 @@ const tool = (name, description, shape, fn) =>
 const tabId = z.number().int().describe("Tab id from list_tabs");
 const ref = z.number().int().describe("Element ref: the [number] shown in snapshot output");
 
-tool("list_tabs", "List the tabs the user has shared with the agent (they share one by clicking the Chrome Bridge icon on it).", {}, async () =>
+tool("list_tabs", "List the tabs available to the agent. By default that is every open tab; if the user switched to per-tab sharing, only tabs they shared by clicking the Chrome Bridge icon.", {}, async () =>
   text(await call({ type: "tabs.list" })));
 
-tool("new_tab", "Open a new tab in the user's logged-in Chrome. The new tab is shared automatically.", { url: z.string() }, async ({ url }) =>
+tool("new_tab", "Open a new tab in the user's logged-in Chrome. The new tab is always available to the agent.", { url: z.string() }, async ({ url }) =>
   text(await call({ type: "tabs.create", url })));
 
 tool("close_tab", "Close a shared tab.", { tabId }, async ({ tabId }) => text(await call({ type: "tabs.close", tabId })));
@@ -180,4 +219,3 @@ tool("evaluate", "Run JavaScript in the page and return the result. Promises are
 });
 
 await server.connect(new StdioServerTransport());
-log(`ready, waiting for extension on ws://127.0.0.1:${PORT}`);
