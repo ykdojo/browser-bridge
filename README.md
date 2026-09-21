@@ -31,9 +31,19 @@ Known gaps: no per-origin allowlist or confirmations yet. `read_page` and `find`
 
 ## Setup
 
-`cd server && npm install`, then `chrome://extensions` - Developer mode - Load unpacked - pick `extension/`. Register with your MCP client, e.g. `claude mcp add -s user browser-bridge -- node <repo>/server/index.js`.
+1. `cd server && npm install`
+2. In Chrome, open `chrome://extensions`, turn on Developer mode, click "Load unpacked" and pick the `extension/` folder. The extension only reaches tabs in the Chrome profile it is loaded in.
+3. Register the server with your MCP client, e.g. `claude mcp add -s user browser-bridge -- node <repo>/server/index.js`
 
-After changing anything in `extension/`, `npm run reload` (in `server/`) reloads it from disk without a trip to `chrome://extensions`, and `npm run dev` does that on every change. Server changes need no reload: each new client session starts the current code.
+### Updating
+
+Loading the extension is the only time you need `chrome://extensions`. After that, run these from `server/`:
+
+- `npm run reload` - reload the extension from disk once, e.g. after a `git pull`
+- `npm run dev` - reload it on every change to `extension/`, for development
+- `npm test` - the e2e suite reloads it before it runs
+
+The one exception: if an edit breaks the extension so badly that it can't start, it can't reload itself either, and needs one click on the reload button. Server changes never need any of this: each new client session starts the current code.
 
 ## Testing
 
