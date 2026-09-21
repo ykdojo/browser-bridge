@@ -35,4 +35,4 @@ Known gaps: no per-origin allowlist or confirmations yet. No iframe handling. Se
 
 ## Background
 
-[NOTES.md](NOTES.md) has the research notes this started from: the CDP autoConnect route and its limitations, the standalone CDP scripts in `scripts/`, and the first real-world use at a Build Day event.
+[NOTES.md](NOTES.md) has the research notes this started from: the CDP autoConnect route and its limitations, plus the standalone CDP scripts in `scripts/`.

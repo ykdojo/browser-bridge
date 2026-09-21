@@ -30,6 +30,3 @@ Not covered: iframes, uploads (deliberately not implemented), shortcut keys beyo
 
 The 10 ad-hoc tools became the 12 Claude-for-Chrome-shaped ones, and Chrome Bridge became Browser Bridge. First tested by hand over MCP stdio against the real logged-in Chrome: walked example.com end to end (tabs, navigate, read_page, find, ref click to iana.org, back, page text, scroll, keys, screenshot, zoom, console/network capture). That pass found the top-level-await bug, then grew into the automated suite above. Rename verified: no "chrome bridge" left in the repo, `claude mcp list` shows `browser-bridge` connected, GitHub responds at `ykdojo/browser-bridge`.
 
-## Initial extension + server (2026-09-19)
-
-Smoke tested during the Build Day session: tool listing, extension origin check, connect/reconnect, tab listing, snapshot, and the peer-takeover cases against a stand-in extension. Click and type were never run against a real page. First real use: reading the Luma guest pages and opening tabs for the Build Day demo. Superseded by the rework above.

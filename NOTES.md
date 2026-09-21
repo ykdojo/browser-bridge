@@ -49,13 +49,13 @@ All run with Bun (`~/.bun/bin/bun run ...`). These predate the extension and use
   - `curl --unix-socket cdp.sock -X POST --data-binary @file.js "http://x/eval?tab=<urlSubstring>"`
   - `curl --unix-socket cdp.sock -X POST -d '{"method":"Target.createTarget","params":{"url":"..."}}' http://x/cdp`
 
-## First real use: Build Day demo
+## First real use: a live demo
 
-At the Vancouver Claude Code Build Day (2026-09-19) I had Claude read the Luma guest list from my logged-in manage tab and build a visualization of the 30 attendees, then open it in a new tab through the same connection.
+For a live demo at an event I hosted (2026-09-19), I had Claude read the guest list from a logged-in event-management tab and build a visualization of the attendees, then open it in a new tab through the same connection.
 
 - Reading `document.body.innerText` worked but only covered the loaded rows.
 - Better: find the API the page already calls (`performance.getEntriesByType('resource')`), then `fetch` it from inside the page with `credentials: "include"`. That returned all 258 guests with registration answers.
-- Hitting an internal API like this is fine as a one-off read with my own host session. It is undocumented, can change without notice, and heavy automated use could go against the site's terms. For anything recurring, use the official Luma API with a key.
+- Hitting an internal API like this is fine as a one-off read with my own host session. It is undocumented, can change without notice, and heavy automated use could go against the site's terms. For anything recurring, use the site's official API with a key.
 - Guest data and the demo page are gitignored. No emails or phone numbers went into the visualization.
 
 ## Side quest: broken Node
