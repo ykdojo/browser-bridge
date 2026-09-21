@@ -3,6 +3,7 @@
 // extension. The extension connects out to us; we send it CDP commands.
 // Tool names and input shapes deliberately mirror Claude for Chrome's tool
 // surface, since models are tuned for those shapes.
+import { readFileSync } from "fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import WebSocket, { WebSocketServer } from "ws";
@@ -396,7 +397,8 @@ async function waitForLoad(tabId) {
 }
 
 // ---- tools ----------------------------------------------------------------
-const server = new McpServer({ name: "browser-bridge", version: "0.2.0" });
+const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url)));
+const server = new McpServer({ name: "browser-bridge", version });
 const text = (t) => ({ content: [{ type: "text", text: typeof t === "string" ? t : JSON.stringify(t, null, 1) }] });
 function withNotices(tabId, result) {
   const queued = notices.get(tabId);
