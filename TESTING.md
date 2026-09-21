@@ -4,11 +4,12 @@ How this repo is tested, and a running log of what testing found. Newest first.
 
 ## The two suites
 
-`npm test` in `server/` runs both. Current state: relay 21/21, e2e 110/110.
+`npm test` in `server/` runs both. Current state: relay 22/22, e2e 110/110.
 
 **`test:relay`** needs no browser. Fake extensions (WebSocket clients sending the extension's Origin) talk to real server processes on a separate port, so it never touches a live setup.
 
 - First server becomes primary, later ones join as peers and are relayed
+- A server exits when its client goes away, so a crashed agent session leaves no orphan holding the port
 - Origin check: web pages, other extensions and header-less clients are rejected
 - No extension: a clear error after a 5s grace period, not a hang
 - Extension drops mid-call: fails in milliseconds, not the 30s timeout. Same when the primary dies under a peer
@@ -56,6 +57,7 @@ Also found and fixed in the same round:
 - Screenshots were device pixels, so on a 2x display a point read off a screenshot would click the wrong place
 - Two profiles with the extension silently fought over the connection
 - The new server code had only ever run as a peer of an older process. It now also runs as primary under test
+- A server outlived a client that died without killing it, because its WebSocket listener kept it alive. It now exits when stdin closes (found when stopping the reload watcher left one behind)
 
 ### Tool surface rework + rename (2026-09-21)
 

@@ -10,7 +10,9 @@
     "start": "node index.js",
     "test": "node ../test/relay.mjs && node ../test/e2e.mjs",
     "test:relay": "node ../test/relay.mjs",
-    "test:e2e": "node ../test/e2e.mjs"
+    "test:e2e": "node ../test/e2e.mjs",
+    "reload": "node ../scripts/reload-extension.mjs",
+    "dev": "node ../scripts/reload-extension.mjs --watch"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

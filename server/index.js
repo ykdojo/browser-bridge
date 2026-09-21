@@ -685,4 +685,8 @@ tool("computer", "Use a mouse and keyboard to interact with the page in a tab, a
   }
 });
 
+// The client owns this process. If it goes away without killing us (a crash),
+// stdin closes: exit then, or the WebSocket server would keep us alive forever,
+// holding the port as an orphan.
+process.stdin.on("close", () => process.exit(0));
 await server.connect(new StdioServerTransport());

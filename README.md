@@ -33,6 +33,8 @@ Known gaps: no per-origin allowlist or confirmations yet. `read_page` and `find`
 
 `cd server && npm install`, then `chrome://extensions` - Developer mode - Load unpacked - pick `extension/`. Register with your MCP client, e.g. `claude mcp add -s user browser-bridge -- node <repo>/server/index.js`.
 
+After changing anything in `extension/`, `npm run reload` (in `server/`) reloads it from disk without a trip to `chrome://extensions`, and `npm run dev` does that on every change. Server changes need no reload: each new client session starts the current code.
+
 ## Testing
 
 `npm test` in `server/` runs two suites. `test:relay` needs no browser: fake extensions on a separate port exercise the connection layer (relay, takeover, disconnects, origin check, profiles). `test:e2e` drives all 12 tools through the real extension and Chrome against an instrumented local page, asserting effects by reading page state back; it reloads the extension from disk first. [TESTING.md](TESTING.md) has what is covered and the log of what testing found.

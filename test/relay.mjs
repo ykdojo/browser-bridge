@@ -90,6 +90,11 @@ try {
   const none = await a.tabsContext();
   check("no extension: clear error after a short wait", none.err && none.txt.includes("not connected") && none.ms < 8000, `${none.ms}ms`);
 
+  const lone = await new McpClient().init();
+  const exited = new Promise((r) => lone.p.on("exit", () => r(true)));
+  lone.p.stdin.end(); // what a crashed client looks like from the server's side
+  check("server exits when its client goes away (no orphans)", await Promise.race([exited, sleep(3000).then(() => false)]));
+
   check("web page origin rejected", await rejected({ origin: "https://evil.example" }));
   check("other extension origin rejected", await rejected({ origin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }));
   check("no origin, no peer header rejected", await rejected({}));
