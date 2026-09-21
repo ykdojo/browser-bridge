@@ -231,7 +231,8 @@ async function keySequence(tabId, text, repeat = 1) {
 }
 
 async function evalJs(tabId, expression) {
-  const r = await cdp(tabId, "Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+  // replMode gives top-level await and last-expression results, like the DevTools console.
+  const r = await cdp(tabId, "Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, replMode: true });
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
   return r.result;
 }
