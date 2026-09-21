@@ -43,7 +43,7 @@ An extension using `chrome.debugger` + a native messaging host avoids the Allow 
 Two pieces. Chrome extensions can only connect out, never be called from outside, so a local process is unavoidable. That process is the MCP server itself.
 
 - `extension/` - MV3, thin relay. Connects to `ws://127.0.0.1:17333`, forwards CDP commands to tabs through `chrome.debugger`. Pings every 20s to keep the service worker alive, retries every 30s via `chrome.alarms` when the server is not running.
-- `server/` - Node MCP server over stdio that also hosts the WebSocket. All logic lives here, so most changes need no extension reload. Tools: `list_tabs`, `new_tab`, `close_tab`, `navigate`, `snapshot`, `click`, `type`, `press_key`, `screenshot`, `evaluate`.
+- `server/` - Node MCP server over stdio that also hosts the WebSocket. All logic lives here, so most changes need no extension reload. Tools: `tabs_context`, `tabs_create`, `tabs_close`, `navigate`, `computer`, `read_page`, `find`, `form_input`, `get_page_text`, `javascript_tool`, `read_console_messages`, `read_network_requests`.
 
 Design choices:
 
@@ -52,7 +52,9 @@ Design choices:
 - **No tab scoping, on purpose for now.** The agent gets every open tab. I built per-tab sharing first (click the icon to share a tab), then a share-all toggle, then dropped both to keep it simple. Worth revisiting before other people install it.
 - **Multiple sessions.** The first server to start owns port 17333 and the extension connection. Later servers join it as peers (no Origin + `x-bridge-peer` header) and get relayed. If the primary exits, a peer takes over the port and the extension reconnects within about 2s.
 - **Origin check instead of a token.** The manifest has a fixed `key`, so the unpacked extension ID is always `epjnmpnkphfbonblfmfeokijfhmjcfne`. The server only accepts WebSocket upgrades with that `chrome-extension://` Origin, which web pages and other extensions cannot forge. A local process can, so this is not a defense against malware already on the machine. The private key is in `.keys/` (gitignored).
-- **Snapshot first.** `snapshot` returns the accessibility tree as text with `[ref]` numbers (`backendDOMNodeId`); `click` and `type` take a ref and resolve it to coordinates with `DOM.getBoxModel`.
+- **Tool shapes match Claude for Chrome.** Models are tuned for that tool surface, so the names, parameters and enums mirror it: one `computer` tool with an `action` enum (clicks, type, key, scroll, screenshot, zoom, hover, drag, wait) instead of separate click/type tools, `read_page`/`find` handing out string refs like `ref_3`, and every tool taking `tabId`. Product-specific tools (image/file upload, GIF recording, plans, shortcuts) are deliberately left out. Implementations are our own, written against the shapes.
+- **Refs.** `read_page` and `find` return `ref_N` ids mapped to CDP `backendDOMNodeId`s per tab; `computer` clicks and `form_input` resolve them to coordinates or nodes with `DOM.getBoxModel`/`DOM.resolveNode`. Refs reset on navigation.
+- **Console/network capture lives in the extension.** `chrome.debugger` events are buffered per tab (capped at 500/1000 entries) from the moment a tab is first attached; buffers reset when the tab changes site. `find` is heuristic text matching over the accessibility tree, not an LLM call.
 
 Known gaps: no per-origin allowlist or confirmations yet. No iframe handling. Sessions share tabs with no locking between them.
 
