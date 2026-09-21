@@ -33,6 +33,3 @@ Known gaps: no per-origin allowlist or confirmations yet. No iframe handling. Se
 
 `npm test` in `server/` runs the end-to-end suite: 33 checks driving all 12 tools through the extension against the real Chrome, asserting effects by reading page state back. Chrome must be running with the extension loaded. [TESTING.md](TESTING.md) is the running log, manual passes included.
 
-## Background
-
-[NOTES.md](NOTES.md) has the research notes this started from: the CDP autoConnect route and its limitations, plus the standalone CDP scripts in `scripts/`.
