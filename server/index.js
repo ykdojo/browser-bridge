@@ -138,7 +138,9 @@ function buildTree(tabId, nodes, { filter = "all", depth = 15, refRoot = null } 
     const role = n.role?.value ?? "";
     const name = (n.name?.value ?? "").trim();
     const interactive = INTERACTIVE.has(role.toLowerCase());
-    let show = !n.ignored && !SKIP.has(role) && !(role === "StaticText" && (!name || parentName.includes(name)));
+    // aria-labelled containers (e.g. contenteditable divs) come through as role
+    // "generic" but are real targets, so a name rescues a skipped role.
+    let show = !n.ignored && (!SKIP.has(role) || (role === "generic" && !!name)) && !(role === "StaticText" && (!name || parentName.includes(name)));
     if (filter === "interactive" && !interactive) show = false;
     if (show) {
       const value = n.value?.value ? ` value="${String(n.value.value).slice(0, 80)}"` : "";
@@ -317,7 +319,7 @@ tool("find", 'Find elements on the page by describing them: purpose (e.g. "searc
     if (n.ignored || !n.backendDOMNodeId) continue;
     const role = (n.role?.value ?? "").toLowerCase();
     const name = (n.name?.value ?? "").trim();
-    if (SKIP.has(n.role?.value) || (!name && !INTERACTIVE.has(role))) continue;
+    if ((SKIP.has(n.role?.value) && !(role === "generic" && name)) || (!name && !INTERACTIVE.has(role))) continue;
     const hay = `${role} ${name}`.toLowerCase();
     let score = 0;
     for (const w of words) if (hay.includes(w)) score += w.length;

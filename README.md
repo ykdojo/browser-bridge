@@ -1,6 +1,8 @@
 # Browser Bridge
 
-A Chrome extension plus a local MCP server that lets AI agents (Claude Code or any other) control my real, logged-in Chrome. Started 2026-09-19 as CDP experiments (notes below); the extension + server under "Browser Bridge" is the main artifact.
+A Chrome extension plus a local MCP server that lets AI agents (Claude Code or any other) control my real, logged-in Chrome. Think of it as an open source alternative to Claude for Chrome, built a slightly different way: everything stays local (extension ↔ localhost WebSocket ↔ MCP server, no third-party relay), it works with any MCP client rather than one product, and it's a deliberately small codebase - one background script and one server file. The tool names and input shapes are kept consistent with Claude for Chrome's, since models are tuned for that surface. Not affiliated with Anthropic.
+
+Started 2026-09-19 as CDP experiments (notes below); the extension + server under "Browser Bridge" is the main artifact. MIT licensed.
 
 ## The goal
 
@@ -59,6 +61,10 @@ Design choices:
 Known gaps: no per-origin allowlist or confirmations yet. No iframe handling. Sessions share tabs with no locking between them.
 
 Setup: `cd server && npm install`, then `chrome://extensions` - Developer mode - Load unpacked - pick `extension/`. Registered in Claude Code with `claude mcp add -s user browser-bridge -- node <repo>/server/index.js`.
+
+## Testing
+
+`npm test` in `server/` runs the end-to-end suite (`test/e2e.mjs`): it spawns the server, serves an instrumented local page, and drives all 12 tools through the extension against the real Chrome, asserting effects by reading page state back - 33 checks covering refs and coordinates, clicks with modifiers, keyboard, forms, scrolling, screenshots, console/network capture and navigation. Chrome must be running with the extension loaded. [TESTING.md](TESTING.md) is the running log of what was tested when, manual passes included.
 
 ## Scripts
 

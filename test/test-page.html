@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html><head><title>Bridge Test Page</title><style>
+  body { font-family: sans-serif; margin: 20px; }
+  #hoverzone { width: 200px; height: 60px; background: #eee; }
+  #hoverzone.hovered { background: orange; }
+  #dragbox { width: 60px; height: 60px; background: steelblue; position: absolute; left: 100px; top: 400px; }
+  #spacer { height: 2000px; }
+</style></head><body>
+<h1>Bridge Test Page</h1>
+<div id="log"></div>
+<button id="btn">Click me</button>
+<input id="txt" aria-label="Test input" placeholder="type here">
+<select id="sel" aria-label="Test select"><option value="a">Alpha</option><option value="b">Beta</option><option value="g">Gamma</option></select>
+<div id="ce" contenteditable="true" aria-label="Editor">edit me</div>
+<div id="hoverzone">hover zone</div>
+<div id="dragbox"></div>
+<div id="spacer"></div>
+<p id="bottom">The very bottom paragraph</p>
+<script>
+  window.events = [];
+  const rec = (e) => window.events.push({ type: e.type, id: e.target.id, detail: e.detail, button: e.button,
+    mods: [e.ctrlKey && "ctrl", e.shiftKey && "shift", e.altKey && "alt", e.metaKey && "meta"].filter(Boolean).join("+") });
+  const btn = document.getElementById("btn");
+  ["click", "dblclick", "contextmenu"].forEach((t) => btn.addEventListener(t, rec));
+  document.getElementById("hoverzone").addEventListener("mouseover", function (e) { this.classList.add("hovered"); rec(e); });
+  const box = document.getElementById("dragbox");
+  let drag = null;
+  box.addEventListener("mousedown", (e) => { drag = { dx: e.clientX - box.offsetLeft, dy: e.clientY - box.offsetTop }; });
+  document.addEventListener("mousemove", (e) => { if (drag) { box.style.left = e.clientX - drag.dx + "px"; box.style.top = e.clientY - drag.dy + "px"; } });
+  document.addEventListener("mouseup", () => { drag = null; });
+  document.getElementById("sel").addEventListener("change", rec);
+  window.onbeforeunload = null; // set to a handler by the force-navigation test
+</script></body></html>
