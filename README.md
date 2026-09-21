@@ -4,7 +4,7 @@ A Chrome extension plus a local MCP server that lets AI agents (Antigravity, Cla
 
 - **Everything stays local.** Extension ↔ localhost WebSocket ↔ MCP server, no third-party relay, no accounts.
 - **Any MCP client can drive it**, not just one product.
-- **The codebase is deliberately small**: one background script and one server file. It's two files instead of one because Chrome extensions can only connect outward, never be called from outside the browser, so something local has to exist for the extension to reach - and that something is the MCP server itself.
+- **The codebase is deliberately small**: one background script and one server file. The extension is a thin relay into Chrome; the MCP server holds all the logic and talks to it over the local WebSocket.
 - **The tool names and input shapes are kept consistent with Claude for Chrome's.** The implementation is independent.
 
 Tools that are features of the Claude product rather than browser primitives are left out: image/file upload, GIF recording, plan approval, shortcuts, window resizing. Also not replicated yet: Claude for Chrome's guardrails (site permissions, blocked categories, confirmation prompts) - see Known gaps.
