@@ -11,32 +11,46 @@ import { z } from "zod";
 const PORT = Number(process.env.BRIDGE_PORT ?? 17333);
 const EXTENSION_ID = process.env.BRIDGE_EXTENSION_ID ?? "epjnmpnkphfbonblfmfeokijfhmjcfne";
 const log = (...a) => console.error("[browser-bridge]", ...a); // stdout belongs to MCP
+const MIN_EXTENSION = "0.6.0"; // first extension version that reports dialogs and file pickers
+const olderThan = (a, b) => a.localeCompare(b, undefined, { numeric: true }) < 0;
 
 // ---- extension link -------------------------------------------------------
 // The first server to start owns the port and the extension connection (primary).
 // Later servers (other agent sessions) connect to it as peers and get relayed.
 // If the primary exits, a peer takes over the port and the extension reconnects.
 const NOT_CONNECTED = "Browser Bridge extension is not connected. Make sure Chrome is open and the extension is loaded, then retry in a few seconds.";
-let ext = null; // primary: the extension's socket
+// primary: every connected extension (one per Chrome profile that has it
+// loaded). The most recently connected one is active; clicking the extension
+// icon in another profile makes that profile active instead.
+const exts = new Set();
+let ext = null; // primary: the active extension's socket
 let upstream = null; // peer: socket to the primary
 let nextId = 0;
 const pending = new Map();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function settle(data) {
-  const m = JSON.parse(data);
+function settle(m) {
   const p = pending.get(m.id);
   if (!p) return; // pings
   pending.delete(m.id);
   m.error ? p.reject(new Error(m.error)) : p.resolve(m.result);
 }
 
-function call(msg, timeoutMs = 30000) {
+// A socket that closes can never answer, so fail its calls now rather than
+// letting them run into the 30s timeout.
+function failPending(sock, reason) {
+  for (const [id, p] of pending) if (p.sock === sock) (pending.delete(id), p.reject(new Error(reason)));
+}
+
+async function call(msg, timeoutMs = 30000) {
+  // Right after startup or a takeover the extension needs a moment to reconnect.
+  for (let i = 0; i < 20 && (ext ?? upstream)?.readyState !== 1; i++) await sleep(250);
   const sock = ext ?? upstream;
-  if (!sock || sock.readyState !== 1) return Promise.reject(new Error(NOT_CONNECTED));
+  if (!sock || sock.readyState !== 1) throw new Error(NOT_CONNECTED);
   return new Promise((resolve, reject) => {
     const id = ++nextId;
     const t = setTimeout(() => pending.delete(id) && reject(new Error("timed out waiting for the extension")), timeoutMs);
-    pending.set(id, { resolve: (v) => (clearTimeout(t), resolve(v)), reject: (e) => (clearTimeout(t), reject(e)) });
+    pending.set(id, { sock, resolve: (v) => (clearTimeout(t), resolve(v)), reject: (e) => (clearTimeout(t), reject(e)) });
     sock.send(JSON.stringify({ ...msg, id }));
   });
 }
@@ -68,12 +82,22 @@ function start() {
       });
       return;
     }
+    exts.add(sock);
     ext = sock;
-    log("extension connected");
-    sock.on("message", settle);
+    log(`extension connected (${exts.size} connected)`);
+    sock.on("message", (data) => {
+      const m = JSON.parse(data);
+      if (m.type === "activate") {
+        ext = sock;
+        return log("extension activated by icon click");
+      }
+      settle(m);
+    });
     sock.on("close", () => {
-      if (ext === sock) ext = null;
-      log("extension disconnected");
+      exts.delete(sock);
+      failPending(sock, "The Browser Bridge extension disconnected before answering. Retry in a few seconds.");
+      if (ext === sock) ext = [...exts].at(-1) ?? null;
+      log(`extension disconnected (${exts.size} connected)`);
     });
   });
 }
@@ -84,17 +108,39 @@ function joinAsPeer() {
     upstream = sock;
     log("peer of an existing browser-bridge server");
   });
-  sock.on("message", settle);
+  sock.on("message", (data) => settle(JSON.parse(data)));
   sock.on("error", () => {});
   sock.on("close", () => {
     if (upstream === sock) upstream = null;
+    failPending(sock, "Lost the connection to the primary Browser Bridge server. Retry in a few seconds.");
     setTimeout(start, 200 + Math.random() * 800); // primary may be gone: try to take over
   });
 }
 start();
 
-const cdp = (tabId, method, params) => call({ type: "cdp", tabId, method, params });
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// The extension piggybacks notices on command results: things that happened in
+// the tab that the agent could not otherwise see, like a JavaScript dialog it
+// dismissed. They are queued per tab and appended to the next tool result.
+const notices = new Map(); // tabId -> notice objects
+async function cdp(tabId, method, params) {
+  const r = await call({ type: "cdp", tabId, method, params });
+  if (r?.__bridgeNotices) {
+    notices.set(tabId, [...(notices.get(tabId) ?? []), ...r.__bridgeNotices]);
+    delete r.__bridgeNotices;
+  }
+  return r;
+}
+
+function describeNotice(n) {
+  if (n.kind === "filechooser") return "The page tried to open a file picker, which was suppressed: native file dialogs can't be operated through this bridge, and file uploads aren't supported.";
+  if (n.kind === "dialog") {
+    const what = `A JavaScript ${n.dialogType} dialog${n.message ? ` ("${n.message}")` : ""}`;
+    if (n.dialogType === "beforeunload") return n.accepted ? "The page's unsaved-changes prompt was accepted (force)." : "The page showed an unsaved-changes prompt and the bridge chose to stay on the page.";
+    if (n.dialogType === "alert") return `${what} opened and was dismissed automatically.`;
+    return `${what} opened and was cancelled automatically, since dialogs block the page. To answer it differently, override window.${n.dialogType} with javascript_tool before triggering it (e.g. window.confirm = () => true).`;
+  }
+  return JSON.stringify(n);
+}
 
 // ---- element refs ---------------------------------------------------------
 // read_page and find hand out string refs like "ref_12". A ref maps to a CDP
@@ -189,10 +235,94 @@ async function mouse(tabId, type, x, y, extra = {}) {
   await cdp(tabId, "Input.dispatchMouseEvent", { type, x, y, ...extra });
 }
 
+// ---- native UI guards -----------------------------------------------------
+// Synthetic input can open operating-system UI (Chrome's context menu, <select>
+// popups, file pickers) but can never close it: those only listen to real OS
+// input. On macOS an open native menu even stalls tab closing for the whole
+// browser. So the bridge never lets one open.
+
+// Runs inside the page. Hit-tests the point (or, for mode "focus", the focused
+// element) through same-origin iframes and open shadow roots.
+function pageGuard(x, y, mode) {
+  const popupSelect = (el) => {
+    const s = el && el.closest && el.closest("select");
+    return !!s && !s.multiple && s.size <= 1 && !s.disabled;
+  };
+  let el;
+  if (mode === "focus") {
+    el = document.activeElement;
+    for (;;) {
+      if (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+      else if (el && (el.tagName === "IFRAME" || el.tagName === "FRAME")) {
+        let d = null;
+        try { d = el.contentDocument; } catch (e) {}
+        if (!d) break;
+        el = d.activeElement;
+      } else break;
+    }
+    return popupSelect(el) ? { blocked: "select" } : {};
+  }
+  let w = window, ox = 0, oy = 0;
+  const wins = [window];
+  for (;;) {
+    el = w.document.elementFromPoint(x - ox, y - oy);
+    while (el && el.shadowRoot) {
+      const inner = el.shadowRoot.elementFromPoint(x - ox, y - oy);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    if (!el || (el.tagName !== "IFRAME" && el.tagName !== "FRAME")) break;
+    let inner = null;
+    try { inner = el.contentDocument ? el.contentWindow : null; } catch (e) {}
+    if (!inner) return mode === "right" ? { blocked: "cross-site-frame" } : {};
+    const r = el.getBoundingClientRect();
+    ox += r.left + el.clientLeft;
+    oy += r.top + el.clientTop;
+    w = inner;
+    wins.push(w);
+  }
+  if (mode !== "right") return popupSelect(el) ? { blocked: "select" } : {};
+  // Last listener on the last node of the bubble path: every page handler has
+  // already run and seen defaultPrevented === false, so custom in-page context
+  // menus behave normally. Only Chrome's own menu is cancelled.
+  for (const win of wins) {
+    const h = (e) => e.preventDefault();
+    win.addEventListener("contextmenu", h);
+    win.setTimeout(() => win.removeEventListener("contextmenu", h), 1500);
+  }
+  return {};
+}
+
+const NATIVE_UI = {
+  select: "This is a native dropdown (<select>). Opening it shows an operating-system menu that can't be seen or operated through this bridge and that blocks the browser until a person closes it. Use form_input with the element's ref and the option's text or value instead.",
+  "cross-site-frame": "Right-clicking inside a cross-site iframe isn't supported: it would open Chrome's native context menu, which blocks the browser until a person closes it.",
+};
+
+async function guard(tabId, x, y, mode) {
+  // No script context (e.g. the PDF viewer): nothing to inspect, let the input through.
+  const r = await evalJs(tabId, `(${pageGuard})(${Number(x)}, ${Number(y)}, ${JSON.stringify(mode)})`).catch(() => null);
+  if (r?.value?.blocked) throw new Error(NATIVE_UI[r.value.blocked]);
+}
+
+// A click or keypress can make the page open a file picker. While interception
+// is on, Chrome reports the request instead of showing the native dialog. It is
+// only on for the duration of the input so a person using the tab is unaffected.
+async function withFileChooserBlocked(tabId, fn) {
+  const on = await cdp(tabId, "Page.setInterceptFileChooserDialog", { enabled: true }).then(() => true, () => false);
+  try {
+    return await fn();
+  } finally {
+    if (on) await cdp(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+  }
+}
+
 async function clickAt(tabId, x, y, { button = "left", clickCount = 1, modifiers = 0 } = {}) {
-  await mouse(tabId, "mouseMoved", x, y, { modifiers });
-  await mouse(tabId, "mousePressed", x, y, { button, clickCount, modifiers });
-  await mouse(tabId, "mouseReleased", x, y, { button, clickCount, modifiers });
+  await guard(tabId, x, y, button === "right" ? "right" : "left");
+  await withFileChooserBlocked(tabId, async () => {
+    await mouse(tabId, "mouseMoved", x, y, { modifiers });
+    await mouse(tabId, "mousePressed", x, y, { button, clickCount, modifiers });
+    await mouse(tabId, "mouseReleased", x, y, { button, clickCount, modifiers });
+  });
 }
 
 const KEYS = {
@@ -239,21 +369,51 @@ async function evalJs(tabId, expression) {
   return r.result;
 }
 
-async function screenshot(tabId, opts = {}) {
-  const { data } = await cdp(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 70, ...opts });
+// Screenshots are always 1 image pixel per CSS pixel, whatever the display's
+// device pixel ratio, so coordinates read off a screenshot are valid click
+// coordinates. `region` ([x0, y0, x1, y1] in viewport pixels) zooms instead.
+async function screenshot(tabId, region) {
+  const v = (await evalJs(tabId, "({sx: scrollX, sy: scrollY, w: innerWidth, h: innerHeight, dpr: devicePixelRatio})")).value;
+  let clip;
+  if (region) {
+    const [x0, y0, x1, y1] = region;
+    if (x1 <= x0 || y1 <= y0) throw new Error("region must run from top-left (x0, y0) to bottom-right (x1, y1)");
+    const magnify = Math.min(3, Math.max(1, v.w / (x1 - x0)));
+    clip = { x: v.sx + x0, y: v.sy + y0, width: x1 - x0, height: y1 - y0, scale: magnify / v.dpr };
+  } else {
+    clip = { x: v.sx, y: v.sy, width: v.w, height: v.h, scale: 1 / v.dpr };
+  }
+  const { data } = await cdp(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 70, clip });
   return { content: [{ type: "image", data, mimeType: "image/jpeg" }] };
+}
+
+async function waitForLoad(tabId) {
+  for (let i = 0; i < 40; i++) {
+    const state = await evalJs(tabId, "document.readyState").catch(() => null);
+    if (state?.value === "complete") return;
+    await sleep(250);
+  }
 }
 
 // ---- tools ----------------------------------------------------------------
 const server = new McpServer({ name: "browser-bridge", version: "0.2.0" });
 const text = (t) => ({ content: [{ type: "text", text: typeof t === "string" ? t : JSON.stringify(t, null, 1) }] });
+function withNotices(tabId, result) {
+  const queued = notices.get(tabId);
+  if (!queued?.length) return result;
+  notices.delete(tabId);
+  const lines = [...new Set(queued.map(describeNotice))].map((l) => "Note: " + l);
+  return { ...result, content: [...result.content, { type: "text", text: lines.join("\n") }] };
+}
 const tool = (name, description, shape, fn) =>
   server.registerTool(name, { description, inputSchema: shape }, async (args) => {
+    let result;
     try {
-      return await fn(args);
+      result = await fn(args);
     } catch (e) {
-      return { isError: true, ...text(String(e?.message ?? e)) };
+      result = { isError: true, ...text(String(e?.message ?? e)) };
     }
+    return withNotices(args?.tabId, result);
   });
 const tabIdParam = z.number().describe("Tab ID to act on. Use tabs_context first if you don't have a valid tab ID.");
 const refParam = z.string().describe('Element reference ID from the read_page or find tools (e.g., "ref_1", "ref_2")');
@@ -262,14 +422,24 @@ const controllable = (url) => /^(https?|file):/.test(url) && !/^https:\/\/(chrom
 
 tool("tabs_context", "Get context information about all open tabs in the user's Chrome: tab IDs, titles, URLs and which tab is active. Call this before other browser tools so you know what tabs exist. Tabs marked controllable: false (browser pages like chrome://) can be seen but not read or acted on.", {}, async () => {
   const tabs = await call({ type: "tabs.list" });
-  return text(tabs.map((t) => ({ ...t, controllable: controllable(t.url) })));
+  const result = text(tabs.map((t) => ({ ...t, controllable: controllable(t.url) })));
+  // The server and the unpacked extension update separately; say so when they drift.
+  const v = await call({ type: "version" }).then((r) => r?.version ?? "0", () => "0");
+  if (olderThan(v, MIN_EXTENSION)) result.content.push({ type: "text", text: `Note: the Browser Bridge extension loaded in Chrome (${v === "0" ? "older than 0.6.0" : v}) is older than this server expects (${MIN_EXTENSION}). Until it is reloaded at chrome://extensions, JavaScript dialogs can freeze a tab and file-picker suppression goes unreported.` });
+  return result;
 });
 
 tool("tabs_create", "Creates a new empty tab in the user's Chrome and returns its tab ID. Use navigate to load a URL in it.", {}, async () =>
   text(await call({ type: "tabs.create", url: "about:blank" })));
 
-tool("tabs_close", "Close a tab by its tab ID. Get valid IDs from tabs_context.", { tabId: tabIdParam }, async ({ tabId }) =>
-  text(await call({ type: "tabs.close", tabId })));
+tool("tabs_close", "Close a tab by its tab ID. Get valid IDs from tabs_context.", { tabId: tabIdParam }, async ({ tabId }) => {
+  try {
+    return text(await call({ type: "tabs.close", tabId }, 10000));
+  } catch (e) {
+    if (!String(e.message).includes("timed out")) throw e;
+    throw new Error("Chrome did not close the tab within 10s. Something native is probably open in the browser window, like a menu or a \"Leave site?\" prompt, and only a person can dismiss it. The tab will close once it is dismissed.");
+  }
+});
 
 tool("navigate", "Navigate a tab to a URL, or go forward/back in browser history.", {
   url: z.string().describe('The URL to navigate to. Can be provided with or without protocol (defaults to https://). Use "forward" to go forward in history or "back" to go back in history.'),
@@ -277,23 +447,32 @@ tool("navigate", "Navigate a tab to a URL, or go forward/back in browser history
   force: z.boolean().optional().describe("If the page blocks leaving because of unsaved changes, discard those changes and navigate anyway. Defaults to false."),
 }, async ({ url, tabId, force }) => {
   await cdp(tabId, "Page.enable");
+  refMaps.delete(tabId); // old refs die with the old document, even when the navigation fails (error page)
+  // A page with unsaved changes answers a navigation with a "Leave site?"
+  // prompt. The extension answers it for us: leave if forced, stay otherwise.
+  if (force) await call({ type: "dialogs.policy", tabId, acceptBeforeunload: true }).catch(() => {});
+  const stayed = () => {
+    const queued = notices.get(tabId) ?? [];
+    const i = queued.findIndex((n) => n.kind === "dialog" && n.dialogType === "beforeunload" && !n.accepted);
+    if (i < 0) return false;
+    queued.splice(i, 1);
+    return true;
+  };
+  const BLOCKED = "The page asked to confirm leaving because of unsaved changes, so the navigation was cancelled and the tab is still on the same page. Pass force: true to discard the changes and navigate anyway.";
   if (url === "back" || url === "forward") {
     const { currentIndex, entries } = await cdp(tabId, "Page.getNavigationHistory");
     const target = entries[currentIndex + (url === "back" ? -1 : 1)];
     if (!target) throw new Error(`No ${url} entry in this tab's history`);
     await cdp(tabId, "Page.navigateToHistoryEntry", { entryId: target.id });
+    await waitForLoad(tabId);
+    if (stayed()) throw new Error(BLOCKED);
     return text(`went ${url} to ${target.url}`);
   }
   const full = /^[a-z]+:/i.test(url) ? url : `https://${url}`;
-  if (force) await evalJs(tabId, "window.onbeforeunload = null; undefined").catch(() => {});
   const r = await cdp(tabId, "Page.navigate", { url: full });
-  if (r.errorText) throw new Error(r.errorText);
-  for (let i = 0; i < 40; i++) {
-    const state = await evalJs(tabId, "document.readyState").catch(() => null);
-    if (state?.value === "complete") break;
-    await sleep(250);
-  }
-  refMaps.delete(tabId); // old refs die with the old document
+  await waitForLoad(tabId);
+  if (stayed()) throw new Error(BLOCKED);
+  if (r.errorText) throw new Error(`${r.errorText} (${full})`);
   return text("navigated to " + full);
 });
 
@@ -313,6 +492,7 @@ tool("find", 'Find elements on the page by describing them: purpose (e.g. "searc
   tabId: tabIdParam,
 }, async ({ query, tabId }) => {
   const nodes = await axNodes(tabId);
+  const byId = new Map(nodes.map((n) => [n.nodeId, n]));
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   const scored = [];
   for (const n of nodes) {
@@ -320,6 +500,8 @@ tool("find", 'Find elements on the page by describing them: purpose (e.g. "searc
     const role = (n.role?.value ?? "").toLowerCase();
     const name = (n.name?.value ?? "").trim();
     if ((SKIP.has(n.role?.value) && !(role === "generic" && name)) || (!name && !INTERACTIVE.has(role))) continue;
+    // A text node that only repeats its parent's name (a button's label) is the same hit twice.
+    if (role === "statictext" && (byId.get(n.parentId)?.name?.value ?? "").includes(name)) continue;
     const hay = `${role} ${name}`.toLowerCase();
     let score = 0;
     for (const w of words) if (hay.includes(w)) score += w.length;
@@ -418,7 +600,7 @@ tool("read_network_requests", "Read HTTP requests (XHR/fetch, documents, images,
 
 const computerActions = ["left_click", "right_click", "type", "screenshot", "wait", "scroll", "key", "left_click_drag", "double_click", "triple_click", "zoom", "scroll_to", "hover"];
 tool("computer", "Use a mouse and keyboard to interact with the page in a tab, and take screenshots. Click by element ref (from read_page or find) or by screenshot coordinates. If you don't have a valid tab ID, use tabs_context first.", {
-  action: z.enum(computerActions).describe("The action to perform:\n* `left_click`/`right_click`/`double_click`/`triple_click`: click at `coordinate` or on `ref`.\n* `type`: type `text` into the focused element.\n* `key`: press key(s) given in `text`, e.g. \"Enter\", \"Tab Tab\", \"cmd+a\".\n* `screenshot`: screenshot the visible page.\n* `zoom`: screenshot just the `region`, magnified.\n* `scroll`: scroll at `coordinate` in `scroll_direction`.\n* `scroll_to`: scroll the element `ref` into view.\n* `hover`: move the mouse to `coordinate` or `ref` without clicking.\n* `left_click_drag`: drag from `start_coordinate` to `coordinate`.\n* `wait`: wait `duration` seconds."),
+  action: z.enum(computerActions).describe("The action to perform:\n* `left_click`/`right_click`/`double_click`/`triple_click`: click at `coordinate` or on `ref`. A right click reaches the page (custom in-page context menus work) but Chrome's own context menu is suppressed, since it can't be seen or used here. Native <select> dropdowns can't be clicked open: set them with form_input.\n* `type`: type `text` into the focused element.\n* `key`: press key(s) given in `text`, e.g. \"Enter\", \"Tab Tab\", \"cmd+a\".\n* `screenshot`: screenshot the visible page.\n* `zoom`: screenshot just the `region`, magnified.\n* `scroll`: scroll at `coordinate` in `scroll_direction`.\n* `scroll_to`: scroll the element `ref` into view.\n* `hover`: move the mouse to `coordinate` or `ref` without clicking.\n* `left_click_drag`: drag from `start_coordinate` to `coordinate`.\n* `wait`: wait `duration` seconds."),
   coordinate: z.array(z.number()).min(2).max(2).optional().describe("(x, y) in pixels from the top-left of the viewport. Required for scroll and left_click_drag; for clicks give either coordinate or ref, not both."),
   text: z.string().optional().describe('Text to type (for `type`) or key(s) to press (for `key`). Keys are space-separated (e.g. "Backspace Backspace"); combos use "+" with cmd/ctrl/alt/shift (e.g. "cmd+a").'),
   duration: z.number().min(0).max(10).optional().describe("Seconds to wait. Required for `wait`, max 10."),
@@ -453,7 +635,9 @@ tool("computer", "Use a mouse and keyboard to interact with the page in a tab, a
       return text("typed");
     case "key": {
       if (!a.text) throw new Error('key needs text, e.g. "Enter" or "cmd+a"');
-      const n = await keySequence(tabId, a.text, a.repeat ?? 1);
+      // These keys open a focused <select>'s native popup.
+      if (/(^|[\s+])(enter|return|space|arrowup|arrowdown|up|down)(\s|$)/i.test(a.text)) await guard(tabId, 0, 0, "focus");
+      const n = await withFileChooserBlocked(tabId, () => keySequence(tabId, a.text, a.repeat ?? 1));
       return text(`pressed ${n} key(s): ${a.text}`);
     }
     case "wait":
@@ -462,20 +646,18 @@ tool("computer", "Use a mouse and keyboard to interact with the page in a tab, a
       return text(`waited ${Math.min(a.duration, 10)}s`);
     case "screenshot":
       return screenshot(tabId);
-    case "zoom": {
+    case "zoom":
       if (!a.region) throw new Error("zoom needs region [x0,y0,x1,y1]");
-      const [x0, y0, x1, y1] = a.region;
-      if (x1 <= x0 || y1 <= y0) throw new Error("region must be top-left to bottom-right");
-      const s = await evalJs(tabId, "({sx: window.scrollX, sy: window.scrollY, w: window.innerWidth})");
-      const scale = Math.min(3, Math.max(1, s.value.w / (x1 - x0)));
-      return screenshot(tabId, { clip: { x: s.value.sx + x0, y: s.value.sy + y0, width: x1 - x0, height: y1 - y0, scale } });
-    }
+      return screenshot(tabId, a.region);
     case "scroll": {
       if (!a.scroll_direction) throw new Error("scroll needs scroll_direction");
       const p = (await point(false)) ?? await evalJs(tabId, "({x: window.innerWidth/2, y: window.innerHeight/2})").then((r) => r.value);
       const d = (a.scroll_amount ?? 3) * 120;
       const [dx, dy] = { up: [0, -d], down: [0, d], left: [-d, 0], right: [d, 0] }[a.scroll_direction];
       await mouse(tabId, "mouseWheel", p.x, p.y, { deltaX: dx, deltaY: dy });
+      // The wheel event returns before the scroll lands; without this a
+      // screenshot or read right after would still show the old position.
+      await sleep(300);
       return text(`scrolled ${a.scroll_direction}`);
     }
     case "scroll_to": {

@@ -28,11 +28,38 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
   lastHost.set(tabId, h);
 });
 
+// ---- dialogs and notices --------------------------------------------------
+// A JavaScript dialog (alert/confirm/prompt/"Leave site?") freezes the page, and
+// with it every command the agent sends. So dialogs the agent causes are
+// answered right away and reported back as a notice on the next result. A dialog
+// that opens while only a person is using the tab is left alone for them.
+const notices = new Map(); // tabId -> [{kind, ...}], delivered with the next cdp result
+const dialogOpen = new Map(); // tabId -> {type, message}
+const lastCmd = new Map(); // tabId -> time of the agent's latest command
+const inflight = new Map(); // tabId -> commands currently running
+const leaveUntil = new Map(); // tabId -> until when "Leave site?" prompts are accepted
+const AGENT_ACTIVE_MS = 3000;
+
+function notice(tabId, n) {
+  const list = notices.get(tabId) ?? [];
+  list.push(n);
+  notices.set(tabId, list.slice(-20));
+}
+
+function answerDialog(tabId, d, late) {
+  // alert has one button. Everything else is cancelled unless leaving was asked for.
+  const accepted = d.type === "alert" || (d.type === "beforeunload" && (leaveUntil.get(tabId) ?? 0) > Date.now());
+  dialogOpen.delete(tabId);
+  notice(tabId, { kind: "dialog", dialogType: d.type, message: (d.message ?? "").slice(0, 300), accepted, late });
+  return chrome.debugger.sendCommand({ tabId }, "Page.handleJavaScriptDialog", { accept: accepted }).catch(() => {});
+}
+
 function dropTab(tabId) {
   attached.delete(tabId);
   consoleBuf.delete(tabId);
   netBuf.delete(tabId);
   lastHost.delete(tabId);
+  for (const m of [notices, dialogOpen, lastCmd, inflight, leaveUntil]) m.delete(tabId);
 }
 chrome.debugger.onDetach.addListener(({ tabId }) => attached.delete(tabId));
 chrome.tabs.onRemoved.addListener(dropTab);
@@ -74,16 +101,36 @@ chrome.debugger.onEvent.addListener(({ tabId }, method, params) => {
       if (e) e.failed = params.errorText;
       break;
     }
+    case "Page.javascriptDialogOpening": {
+      const d = { type: params.type, message: params.message };
+      dialogOpen.set(tabId, d);
+      const agentActive = (inflight.get(tabId) ?? 0) > 0 || Date.now() - (lastCmd.get(tabId) ?? 0) < AGENT_ACTIVE_MS;
+      if (agentActive) answerDialog(tabId, d, false);
+      break;
+    }
+    case "Page.javascriptDialogClosed":
+      dialogOpen.delete(tabId);
+      break;
+    case "Page.fileChooserOpened":
+      notice(tabId, { kind: "filechooser" });
+      break;
   }
 });
 
 async function ensureAttached(tabId) {
   if (attached.has(tabId)) return false;
-  await chrome.debugger.attach({ tabId }, "1.3");
+  try {
+    await chrome.debugger.attach({ tabId }, "1.3");
+  } catch (e) {
+    // The service worker restarted and forgot a session that Chrome kept.
+    if (!/already attached/i.test(String(e?.message ?? e))) throw e;
+  }
   attached.add(tabId);
   // Start event capture right away so console/network reads have data later.
+  // Page events carry the dialog and file-picker reports.
   await chrome.debugger.sendCommand({ tabId }, "Runtime.enable");
   await chrome.debugger.sendCommand({ tabId }, "Network.enable").catch(() => {});
+  await chrome.debugger.sendCommand({ tabId }, "Page.enable").catch(() => {});
   return true;
 }
 
@@ -98,8 +145,14 @@ async function handle(msg) {
       return { tabId: t.id };
     }
     case "tabs.close":
+      // Closing is leaving: accept the page's "Leave site?" prompt if it has one.
+      leaveUntil.set(msg.tabId, Date.now() + 10000);
+      lastCmd.set(msg.tabId, Date.now());
       await chrome.tabs.remove(msg.tabId);
       return { closed: true };
+    case "dialogs.policy":
+      if (msg.acceptBeforeunload) leaveUntil.set(msg.tabId, Date.now() + 10000);
+      return { ok: true };
     case "console.read": {
       const justAttached = await ensureAttached(msg.tabId);
       const entries = consoleBuf.get(msg.tabId) ?? [];
@@ -113,9 +166,31 @@ async function handle(msg) {
       return { entries, justAttached };
     }
     case "cdp": {
-      await ensureAttached(msg.tabId);
-      return (await chrome.debugger.sendCommand({ tabId: msg.tabId }, msg.method, msg.params ?? {})) ?? {};
+      const tabId = msg.tabId;
+      await ensureAttached(tabId);
+      // A dialog from before the agent got here would hang this command.
+      if (dialogOpen.has(tabId)) await answerDialog(tabId, dialogOpen.get(tabId), true);
+      lastCmd.set(tabId, Date.now());
+      inflight.set(tabId, (inflight.get(tabId) ?? 0) + 1);
+      let result;
+      try {
+        result = (await chrome.debugger.sendCommand({ tabId }, msg.method, msg.params ?? {})) ?? {};
+      } finally {
+        inflight.set(tabId, inflight.get(tabId) - 1);
+        lastCmd.set(tabId, Date.now());
+      }
+      if (notices.get(tabId)?.length) {
+        result.__bridgeNotices = notices.get(tabId);
+        notices.delete(tabId);
+      }
+      return result;
     }
+    case "version":
+      return { version: chrome.runtime.getManifest().version };
+    case "reload":
+      // Re-reads the unpacked extension from disk. Answer first, then reload.
+      setTimeout(() => chrome.runtime.reload(), 100);
+      return { reloading: true };
     default:
       throw new Error("unknown message type " + msg.type);
   }
@@ -149,5 +224,10 @@ chrome.alarms.create("reconnect", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
-chrome.action.onClicked.addListener(connect);
+// With the extension loaded in several Chrome profiles, the server talks to one
+// at a time. Clicking the icon makes this profile the active one.
+chrome.action.onClicked.addListener(() => {
+  connect();
+  if (ws?.readyState === 1) ws.send('{"type":"activate"}');
+});
 connect();

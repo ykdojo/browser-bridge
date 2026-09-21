@@ -1,33 +1,74 @@
 <!DOCTYPE html>
 <html><head><title>Bridge Test Page</title><style>
   body { font-family: sans-serif; margin: 20px; }
+  #flow { width: 560px; }
+  #flow > * { margin: 6px 0; }
   #hoverzone { width: 200px; height: 60px; background: #eee; }
   #hoverzone.hovered { background: orange; }
-  #dragbox { width: 60px; height: 60px; background: steelblue; position: absolute; left: 100px; top: 400px; }
-  #spacer { height: 2000px; }
+  #scroller { width: 200px; height: 100px; overflow: auto; border: 1px solid #999; }
+  #scroller div { height: 1000px; }
+  #ctxzone { width: 200px; height: 40px; background: #dde; }
+  #custommenu { display: none; position: absolute; background: white; border: 1px solid #333; padding: 4px; }
+  #frame { width: 300px; height: 80px; border: 1px solid #999; }
+  /* Solid, unique colors so tests can find these in screenshot pixels. */
+  #pixeltarget { position: absolute; left: 700px; top: 40px; width: 80px; height: 80px; background: #ff00ff; }
+  #lowtarget { position: absolute; left: 300px; top: 1600px; width: 80px; height: 80px; background: #00ff00; }
+  #dragbox { position: absolute; left: 700px; top: 300px; width: 60px; height: 60px; background: steelblue; }
+  #spacer { height: 2000px; width: 3000px; }
 </style></head><body>
-<h1>Bridge Test Page</h1>
-<div id="log"></div>
-<button id="btn">Click me</button>
-<input id="txt" aria-label="Test input" placeholder="type here">
-<select id="sel" aria-label="Test select"><option value="a">Alpha</option><option value="b">Beta</option><option value="g">Gamma</option></select>
-<div id="ce" contenteditable="true" aria-label="Editor">edit me</div>
-<div id="hoverzone">hover zone</div>
+<div id="flow">
+  <h1>Bridge Test Page</h1>
+  <button id="btn">Click me</button>
+  <form id="form">
+    <input id="txt" aria-label="Test input" placeholder="type here">
+    <input id="num" type="number" aria-label="Quantity">
+    <textarea id="area" aria-label="Notes"></textarea>
+    <label><input id="chk" type="checkbox"> Subscribe</label>
+    <label><input type="radio" name="size" value="s"> Small</label>
+    <label><input type="radio" name="size" value="m"> Medium</label>
+    <select id="sel" aria-label="Test select"><option value="a">Alpha</option><option value="b">Beta</option><option value="g">Gamma</option></select>
+    <button type="submit">Submit form</button>
+  </form>
+  <div id="ce" contenteditable="true" aria-label="Editor">edit me</div>
+  <div id="hoverzone">hover zone</div>
+  <div id="scroller" aria-label="Nested scroller"><div>nested scroll content</div></div>
+  <div id="ctxzone" role="button" aria-label="Custom menu zone">right-click me</div>
+  <div id="custommenu">custom menu item</div>
+  <div>
+    <button id="alertbtn">Show alert</button>
+    <button id="confirmbtn">Show confirm</button>
+    <button id="promptbtn">Show prompt</button>
+    <input id="file" type="file" aria-label="Upload file">
+    <button id="scriptupload">Upload via script</button>
+  </div>
+  <iframe id="frame" title="Same-origin frame" srcdoc="<button id='framebtn' style='margin:20px' onclick='parent.events.push({type:&quot;click&quot;,id:&quot;framebtn&quot;})' oncontextmenu='parent.events.push({type:&quot;contextmenu&quot;,id:&quot;framebtn&quot;})'>Frame button</button>"></iframe>
+</div>
+<div id="pixeltarget" role="button" aria-label="Pixel target"></div>
+<div id="lowtarget" role="button" aria-label="Low target"></div>
 <div id="dragbox"></div>
 <div id="spacer"></div>
 <p id="bottom">The very bottom paragraph</p>
 <script>
   window.events = [];
-  const rec = (e) => window.events.push({ type: e.type, id: e.target.id, detail: e.detail, button: e.button,
+  const rec = (e) => window.events.push({ type: e.type, id: e.target.id, detail: e.detail, button: e.button, prevented: e.defaultPrevented,
     mods: [e.ctrlKey && "ctrl", e.shiftKey && "shift", e.altKey && "alt", e.metaKey && "meta"].filter(Boolean).join("+") });
-  const btn = document.getElementById("btn");
-  ["click", "dblclick", "contextmenu"].forEach((t) => btn.addEventListener(t, rec));
-  document.getElementById("hoverzone").addEventListener("mouseover", function (e) { this.classList.add("hovered"); rec(e); });
-  const box = document.getElementById("dragbox");
+  const $ = (id) => document.getElementById(id);
+  ["click", "dblclick", "contextmenu"].forEach((t) => $("btn").addEventListener(t, rec));
+  $("pixeltarget").addEventListener("click", rec);
+  $("lowtarget").addEventListener("click", rec);
+  $("txt").addEventListener("input", rec);
+  $("sel").addEventListener("change", rec);
+  $("form").addEventListener("submit", (e) => { e.preventDefault(); window.events.push({ type: "submit", id: "form" }); });
+  $("hoverzone").addEventListener("mouseover", function (e) { this.classList.add("hovered"); rec(e); });
+  // A page-drawn context menu, the kind an agent can actually use.
+  $("ctxzone").addEventListener("contextmenu", (e) => { e.preventDefault(); const m = $("custommenu"); m.style.display = "block"; m.style.left = e.pageX + "px"; m.style.top = e.pageY + "px"; });
+  $("alertbtn").addEventListener("click", () => { alert("hello-alert"); window.events.push({ type: "alert-returned" }); });
+  $("confirmbtn").addEventListener("click", () => window.events.push({ type: "confirm-returned", value: confirm("really?") }));
+  $("promptbtn").addEventListener("click", () => window.events.push({ type: "prompt-returned", value: prompt("name?") }));
+  $("scriptupload").addEventListener("click", () => { $("file").click(); window.events.push({ type: "script-upload-clicked" }); });
+  const box = $("dragbox");
   let drag = null;
   box.addEventListener("mousedown", (e) => { drag = { dx: e.clientX - box.offsetLeft, dy: e.clientY - box.offsetTop }; });
   document.addEventListener("mousemove", (e) => { if (drag) { box.style.left = e.clientX - drag.dx + "px"; box.style.top = e.clientY - drag.dy + "px"; } });
   document.addEventListener("mouseup", () => { drag = null; });
-  document.getElementById("sel").addEventListener("change", rec);
-  window.onbeforeunload = null; // set to a handler by the force-navigation test
 </script></body></html>

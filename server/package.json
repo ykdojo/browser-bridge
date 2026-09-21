@@ -8,11 +8,16 @@
   },
   "scripts": {
     "start": "node index.js",
-    "test": "node ../test/e2e.mjs"
+    "test": "node ../test/relay.mjs && node ../test/e2e.mjs",
+    "test:relay": "node ../test/relay.mjs",
+    "test:e2e": "node ../test/e2e.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "ws": "^8.21.3",
     "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "jpeg-js": "^0.4.4"
   }
 }
