@@ -1,6 +1,6 @@
 # Browser Bridge
 
-A Chrome extension plus a local MCP server that lets AI agents (Claude Code or any other) control my real, logged-in Chrome. Think of it as an open source alternative to Claude for Chrome, built a slightly different way: everything stays local (extension ↔ localhost WebSocket ↔ MCP server, no third-party relay), it works with any MCP client rather than one product, and it's a deliberately small codebase - one background script and one server file. The tool names and input shapes are kept consistent with Claude for Chrome's, since models are tuned for that surface. Not affiliated with Anthropic.
+A Chrome extension plus a local MCP server that lets AI agents (Claude Code or any other) control your real, logged-in Chrome. Think of it as an open source alternative to Claude for Chrome, built a slightly different way: everything stays local (extension ↔ localhost WebSocket ↔ MCP server, no third-party relay), it works with any MCP client rather than one product, and it's a deliberately small codebase - one background script and one server file. The tool names and input shapes are kept consistent with Claude for Chrome's, since models are tuned for that surface. Not affiliated with Anthropic.
 
 Started 2026-09-19 as CDP experiments (notes below); the extension + server under "Browser Bridge" is the main artifact. MIT licensed.
 
