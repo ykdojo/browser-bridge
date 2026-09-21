@@ -11,7 +11,7 @@ Tools that are features of the Claude product rather than browser primitives are
 
 ## How it works
 
-- `extension/` - MV3, thin relay. Connects to `ws://127.0.0.1:17333`, forwards Chrome DevTools Protocol (CDP) commands to tabs through `chrome.debugger`, and buffers console/network events per tab. Pings every 20s to keep the service worker alive, retries every 30s via `chrome.alarms` when the server is not running.
+- `extension/` - Manifest V3, thin relay. Connects to `ws://127.0.0.1:17333`, forwards Chrome DevTools Protocol (CDP) commands to tabs through `chrome.debugger`, and buffers console/network events per tab. Pings every 20s to keep the service worker alive, retries every 30s via `chrome.alarms` when the server is not running.
 - `server/` - Node MCP server over stdio that also hosts the WebSocket. All logic lives here, so most changes need no extension reload. Tools: `tabs_context`, `tabs_create`, `tabs_close`, `navigate`, `computer`, `read_page`, `find`, `form_input`, `get_page_text`, `javascript_tool`, `read_console_messages`, `read_network_requests`.
 
 Design choices:
