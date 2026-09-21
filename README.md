@@ -7,8 +7,6 @@ A Chrome extension plus a local MCP server that lets AI agents (Antigravity, Cla
 - **The codebase is deliberately small**: one background script and one server file. It's two files instead of one because Chrome extensions can only connect outward, never be called from outside the browser, so something local has to exist for the extension to reach - and that something is the MCP server itself.
 - **The tool names and input shapes are kept consistent with Claude for Chrome's.**
 
-Started 2026-09-19 as CDP experiments (notes below); the extension + server under "Browser Bridge" is the main artifact. MIT licensed.
-
 ## How this relates to Claude for Chrome
 
 **Same interface, independent implementation.** The 12 tools use the same names, parameters and enums as Claude for Chrome's browser tools (`computer` with its action enum, `read_page`, `find`, `form_input`, `get_page_text`, `javascript_tool`, `read_console_messages`, `read_network_requests`, `navigate`, and the tabs tools). That's deliberate: models are trained against that tool surface, so matching the shapes gets better tool use for free. Everything behind the shapes is written from scratch on raw CDP - no code, prompts or assets from the extension are used. Some implementations are intentionally simpler: `find` is heuristic text matching over the accessibility tree rather than an LLM call, and refs come straight from CDP backend node IDs.
