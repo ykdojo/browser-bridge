@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chrome Bridge</title>
+<title>Browser Bridge</title>
 <link rel="icon" href="logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -93,11 +93,11 @@ footer{color:var(--muted);font-size:14.5px;border-top:1px solid var(--line);padd
 
 <header>
   <div class="brand">
-    <svg viewBox="0 0 128 128" role="img" aria-label="Chrome Bridge logo"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f2903f"/><stop offset="1" stop-color="#d4540f"/></linearGradient></defs><rect width="128" height="128" rx="28" fill="url(#lg)"/><g transform="translate(0 -8)"><g fill="none" stroke="#fff" stroke-linecap="round"><path d="M28 86 Q64 22 100 86" stroke-width="9"/><path d="M46 62V86M64 54V86M82 62V86" stroke-width="5" opacity=".85"/><path d="M18 86H110" stroke-width="9"/></g><circle cx="18" cy="86" r="8" fill="#fff"/><circle cx="110" cy="86" r="8" fill="#fff"/></g></svg>
-    <span>Chrome Bridge</span>
+    <svg viewBox="0 0 128 128" role="img" aria-label="Browser Bridge logo"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f2903f"/><stop offset="1" stop-color="#d4540f"/></linearGradient></defs><rect width="128" height="128" rx="28" fill="url(#lg)"/><g transform="translate(0 -8)"><g fill="none" stroke="#fff" stroke-linecap="round"><path d="M28 86 Q64 22 100 86" stroke-width="9"/><path d="M46 62V86M64 54V86M82 62V86" stroke-width="5" opacity=".85"/><path d="M18 86H110" stroke-width="9"/></g><circle cx="18" cy="86" r="8" fill="#fff"/><circle cx="110" cy="86" r="8" fill="#fff"/></g></svg>
+    <span>Browser Bridge</span>
   </div>
   <h1>Let an AI agent use the Chrome you are already logged into.</h1>
-  <p class="lede">Browser automation usually starts a fresh, logged-out browser. Chrome Bridge is a small extension plus a local MCP server that gives Claude Code, or any other MCP client, the tabs in your real Chrome instead.</p>
+  <p class="lede">Browser automation usually starts a fresh, logged-out browser. Browser Bridge is a small extension plus a local MCP server that gives Claude Code, or any other MCP client, the tabs in your real Chrome instead.</p>
 </header>
 
 <figure class="wide">
@@ -218,7 +218,7 @@ footer{color:var(--muted);font-size:14.5px;border-top:1px solid var(--line);padd
   <ol class="steps">
     <li><b>Install the server's dependencies.</b><span><code>cd server &amp;&amp; npm install</code></span></li>
     <li><b>Load the extension.</b><span>Open <code>chrome://extensions</code>, turn on Developer mode, choose "Load unpacked" and pick the <code>extension</code> folder.</span></li>
-    <li><b>Register the server with the agent.</b><span><code>claude mcp add -s user chrome-bridge -- node &lt;repo&gt;/server/index.js</code></span></li>
+    <li><b>Register the server with the agent.</b><span><code>claude mcp add -s user browser-bridge -- node &lt;repo&gt;/server/index.js</code></span></li>
   </ol>
 </section>
 

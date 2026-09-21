@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// MCP server (stdio) that also hosts a localhost WebSocket for the Chrome Bridge
+// MCP server (stdio) that also hosts a localhost WebSocket for the Browser Bridge
 // extension. The extension connects out to us; we send it CDP commands.
 // Tool names and input shapes deliberately mirror Claude for Chrome's tool
 // surface, since models are tuned for those shapes.
@@ -10,13 +10,13 @@ import { z } from "zod";
 
 const PORT = Number(process.env.BRIDGE_PORT ?? 17333);
 const EXTENSION_ID = process.env.BRIDGE_EXTENSION_ID ?? "epjnmpnkphfbonblfmfeokijfhmjcfne";
-const log = (...a) => console.error("[chrome-bridge]", ...a); // stdout belongs to MCP
+const log = (...a) => console.error("[browser-bridge]", ...a); // stdout belongs to MCP
 
 // ---- extension link -------------------------------------------------------
 // The first server to start owns the port and the extension connection (primary).
 // Later servers (other agent sessions) connect to it as peers and get relayed.
 // If the primary exits, a peer takes over the port and the extension reconnects.
-const NOT_CONNECTED = "Chrome Bridge extension is not connected. Make sure Chrome is open and the extension is loaded, then retry in a few seconds.";
+const NOT_CONNECTED = "Browser Bridge extension is not connected. Make sure Chrome is open and the extension is loaded, then retry in a few seconds.";
 let ext = null; // primary: the extension's socket
 let upstream = null; // peer: socket to the primary
 let nextId = 0;
@@ -82,7 +82,7 @@ function joinAsPeer() {
   const sock = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { "x-bridge-peer": "1" } });
   sock.on("open", () => {
     upstream = sock;
-    log("peer of an existing chrome-bridge server");
+    log("peer of an existing browser-bridge server");
   });
   sock.on("message", settle);
   sock.on("error", () => {});
@@ -242,7 +242,7 @@ async function screenshot(tabId, opts = {}) {
 }
 
 // ---- tools ----------------------------------------------------------------
-const server = new McpServer({ name: "chrome-bridge", version: "0.2.0" });
+const server = new McpServer({ name: "browser-bridge", version: "0.2.0" });
 const text = (t) => ({ content: [{ type: "text", text: typeof t === "string" ? t : JSON.stringify(t, null, 1) }] });
 const tool = (name, description, shape, fn) =>
   server.registerTool(name, { description, inputSchema: shape }, async (args) => {

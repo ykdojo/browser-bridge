@@ -1,10 +1,10 @@
 {
-  "name": "chrome-bridge-mcp",
+  "name": "browser-bridge-mcp",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "chrome-bridge-mcp": "index.js"
+    "browser-bridge-mcp": "index.js"
   },
   "scripts": {
     "start": "node index.js"

@@ -38,7 +38,7 @@ Any CDP client works, not just the MCP server. The scripts here talk to it direc
 
 An extension using `chrome.debugger` + a native messaging host avoids the Allow dialog and lets me enforce tab and origin scoping in code. Costs: a "started debugging this browser" infobar, a subset of CDP domains, one debugger client per tab, MV3 service worker reconnect logic. Native messaging is more robust than WebSocket for the bridge (keeps the service worker alive, no open localhost port). Loading it unpacked avoids Web Store review. WebMCP (site opt-in) and Gemini auto browse (closed to third parties) don't make this obsolete.
 
-## Chrome Bridge (my own extension + MCP server)
+## Browser Bridge (my own extension + MCP server)
 
 Two pieces. Chrome extensions can only connect out, never be called from outside, so a local process is unavoidable. That process is the MCP server itself.
 
@@ -58,7 +58,7 @@ Design choices:
 
 Known gaps: no per-origin allowlist or confirmations yet. No iframe handling. Sessions share tabs with no locking between them.
 
-Setup: `cd server && npm install`, then `chrome://extensions` - Developer mode - Load unpacked - pick `extension/`. Registered in Claude Code with `claude mcp add -s user chrome-bridge -- node <repo>/server/index.js`.
+Setup: `cd server && npm install`, then `chrome://extensions` - Developer mode - Load unpacked - pick `extension/`. Registered in Claude Code with `claude mcp add -s user browser-bridge -- node <repo>/server/index.js`.
 
 ## Scripts
 
