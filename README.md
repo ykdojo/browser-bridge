@@ -1,6 +1,6 @@
-# Chrome CDP access
+# Browser Bridge
 
-Notes and scripts for letting AI agents (Claude Code or any other) control my real, logged-in Chrome. Started 2026-09-19.
+A Chrome extension plus a local MCP server that lets AI agents (Claude Code or any other) control my real, logged-in Chrome. Started 2026-09-19 as CDP experiments (notes below); the extension + server under "Browser Bridge" is the main artifact.
 
 ## The goal
 
