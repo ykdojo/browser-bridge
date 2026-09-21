@@ -19,7 +19,7 @@ Design choices:
 - **`chrome.debugger` over content scripts.** Trusted input events, accessibility tree, screenshots, works regardless of the page's Content Security Policy. Cost: the "started debugging this browser" bar while attached.
 - **WebSocket over native messaging.** Two-step install (add extension, run one command). Native messaging needs a per-OS host manifest.
 - **Refs.** `read_page` and `find` return `ref_N` ids mapped to CDP `backendDOMNodeId`s per tab; `computer` clicks and `form_input` resolve them to coordinates or nodes. Refs reset on navigation. `find` is heuristic text matching over the accessibility tree, not an LLM call.
-- **Multiple sessions.** The first server to start owns port 17333 and the extension connection. Later servers join it as peers and get relayed; if the primary exits, a peer takes over within about 2s.
+- **Multiple sessions.** Each MCP client spawns its own copy of the server, but there's only one extension connection and one port. So the first server to start owns port 17333 and the extension; later servers join it as peers and get relayed, and if the primary exits, a peer takes over within about 2s. Without this, a second agent session would fail with "port in use".
 - **Origin check instead of a token.** The manifest has a fixed `key`, so the unpacked extension ID is stable, and the server only accepts WebSocket upgrades with that `chrome-extension://` Origin, which web pages and other extensions cannot forge. A local process can, so this is not a defense against malware already on the machine.
 - **No tab scoping, on purpose for now.** The agent gets every open tab. Per-tab sharing existed early on and was dropped to keep things simple; worth revisiting.
 
