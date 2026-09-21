@@ -1,6 +1,6 @@
 # Browser Bridge
 
-A Chrome extension plus a local MCP server that lets AI agents (Antigravity, Claude Code, or any other) control your real, logged-in Chrome. Think of it as an open source alternative to Claude for Chrome, built a slightly different way.
+A Chrome extension plus a local MCP (Model Context Protocol) server that lets AI agents (Antigravity, Claude Code, or any other) control your real, logged-in Chrome. Think of it as an open source alternative to Claude for Chrome, built a slightly different way.
 
 - **Everything stays local.** Extension ↔ localhost WebSocket ↔ MCP server, no third-party relay, no accounts.
 - **Any MCP client can drive it**, not just one product.
@@ -16,7 +16,7 @@ Tools that are features of the Claude product rather than browser primitives are
 
 Design choices:
 
-- **`chrome.debugger` over content scripts.** Trusted input events, accessibility tree, screenshots, works regardless of page CSP. Cost: the "started debugging this browser" bar while attached.
+- **`chrome.debugger` over content scripts.** Trusted input events, accessibility tree, screenshots, works regardless of the page's Content Security Policy. Cost: the "started debugging this browser" bar while attached.
 - **WebSocket over native messaging.** Two-step install (add extension, run one command). Native messaging needs a per-OS host manifest.
 - **Refs.** `read_page` and `find` return `ref_N` ids mapped to CDP `backendDOMNodeId`s per tab; `computer` clicks and `form_input` resolve them to coordinates or nodes. Refs reset on navigation. `find` is heuristic text matching over the accessibility tree, not an LLM call.
 - **Multiple sessions.** The first server to start owns port 17333 and the extension connection. Later servers join it as peers and get relayed; if the primary exits, a peer takes over within about 2s.
