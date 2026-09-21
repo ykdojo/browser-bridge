@@ -5,9 +5,7 @@ A Chrome extension plus a local MCP server that lets AI agents (Antigravity, Cla
 - **Everything stays local.** Extension ↔ localhost WebSocket ↔ MCP server, no third-party relay.
 - **Any MCP client can drive it**, not just one product.
 - **The codebase is deliberately small**: one background script and one server file. It's two files instead of one because Chrome extensions can only connect outward, never be called from outside the browser, so something local has to exist for the extension to reach - and that something is the MCP server itself.
-- **The tool names and input shapes are kept consistent with Claude for Chrome's**, since models are tuned for that surface.
-
-Not affiliated with Anthropic.
+- **The tool names and input shapes are kept consistent with Claude for Chrome's.**
 
 Started 2026-09-19 as CDP experiments (notes below); the extension + server under "Browser Bridge" is the main artifact. MIT licensed.
 
