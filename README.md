@@ -1,6 +1,6 @@
 # Browser Bridge
 
-A Chrome extension plus a local MCP (Model Context Protocol) server that lets AI agents (Antigravity, Claude Code, or any other) control your real, logged-in Chrome. Think of it as an open source alternative to Claude for Chrome, built a slightly different way.
+A Chrome extension plus a local MCP server that lets AI agents (Antigravity, Claude Code, or any other) control your real, logged-in Chrome. Think of it as an open source alternative to Claude for Chrome, built a slightly different way.
 
 - **Everything stays local.** Extension ↔ localhost WebSocket ↔ MCP server, no third-party relay, no accounts.
 - **Any MCP client can drive it**, not just one product.
