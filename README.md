@@ -4,6 +4,21 @@ A Chrome extension plus a local MCP server that lets AI agents (Claude Code or a
 
 Started 2026-09-19 as CDP experiments (notes below); the extension + server under "Browser Bridge" is the main artifact. MIT licensed.
 
+## How this relates to Claude for Chrome
+
+**Same interface, independent implementation.** The 12 tools use the same names, parameters and enums as Claude for Chrome's browser tools (`computer` with its action enum, `read_page`, `find`, `form_input`, `get_page_text`, `javascript_tool`, `read_console_messages`, `read_network_requests`, `navigate`, and the tabs tools). That's deliberate: models are trained against that tool surface, so matching the shapes gets better tool use for free. Everything behind the shapes is written from scratch on raw CDP - no code, prompts or assets from the extension are used. Some implementations are intentionally simpler: `find` is heuristic text matching over the accessibility tree rather than an LLM call, and refs come straight from CDP backend node IDs.
+
+**What's different by design:**
+
+- **Local and client-agnostic.** Claude for Chrome is a product: a sidebar in Chrome that talks to claude.ai and works only with Claude. Browser Bridge is plumbing: extension → localhost WebSocket → MCP server on stdio, no accounts, no remote calls, and any MCP client can drive it - Claude Code, another agent, or a script.
+- **Small on purpose.** One background script, one server file. Easy to read end to end before trusting it with a logged-in browser.
+- **Multi-session.** Several agent sessions share the one extension connection through the peer relay.
+
+**What's deliberately not implemented:**
+
+- **Product-coupled tools**: `upload_image` (uploads images from the Claude conversation's own image store), `file_upload`, `gif_creator`, `resize_window`, `update_plan` (Claude's plan-approval flow), `shortcuts_*`. They're features of the Claude product, not browser primitives; an MCP client brings its own equivalents where it needs them.
+- **Guardrails.** Claude for Chrome ships site permissions, blocked categories and confirmation prompts. Browser Bridge has none of that yet: the agent gets every tab. That's the biggest gap to close before recommending this to anyone else (see Known gaps).
+
 ## The goal
 
 Give an agent access to my logged-in browser, not a fresh logged-out Playwright one. I was considering building my own version of Claude for Chrome.
