@@ -12,8 +12,11 @@ const EXT_ORIGIN = "chrome-extension://epjnmpnkphfbonblfmfeokijfhmjcfne";
 const SERVER = new URL("../server/index.js", import.meta.url).pathname;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-let pass = 0, fail = 0;
-const check = (label, ok, info = "") => { ok ? pass++ : fail++; console.log(`${ok ? "PASS" : "FAIL"}  ${label}${info ? "  -- " + info : ""}`); };
+let pass = 0, fail = 0, last = "(startup)";
+const check = (label, ok, info = "") => { last = label; ok ? pass++ : fail++; console.log(`${ok ? "PASS" : "FAIL"}  ${label}${info ? "  -- " + info : ""}`); };
+// This suite takes about 30 seconds. A hang must fail loudly, not wait forever.
+const LIMIT_MS = 2 * 60 * 1000;
+setTimeout(() => { console.log(`FAIL  suite exceeded ${LIMIT_MS / 1000}s; stuck after: "${last}"\n\nrelay: ${pass} passed, ${fail + 1} failed`); process.exit(1); }, LIMIT_MS).unref();
 
 class McpClient {
   constructor() {
@@ -31,7 +34,12 @@ class McpClient {
     });
   }
   rpc(method, params) {
-    return new Promise((res) => { const id = ++this.nextId; this.waiters.set(id, res); this.p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n"); });
+    return new Promise((res, rej) => {
+      const id = ++this.nextId;
+      this.waiters.set(id, res);
+      this.p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+      setTimeout(() => this.waiters.has(id) && rej(new Error(`${method} ${params?.name ?? ""} got no answer in 40s. Server log: ${this.log.trim().slice(-300)}`)), 40000).unref();
+    });
   }
   async init() {
     await this.rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "relay-test", version: "0" } });

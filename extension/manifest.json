@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Browser Bridge",
-  "version": "0.6.3",
+  "version": "0.6.5",
   "description": "Lets a local MCP server control the tabs in this browser.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwYqMd/bPOmP18njOVCnSA0Akam3UW8tVu9OAmdxr9KspHNaZ+2IaT/zMmE3QMME0lM72grSqSN+QVPrWLav2H6Cx4IQUeXBbPq8McshiM10NrcOg4mD3YDhpNjLb8uD5pAue8ZtFJN51zO0PuZondy+9BFFoAbswKuUfUeSf0m8DIbVvh0UuZ9zqgJziLM0uI61HU+OYpGeHs2AU7HcBBnkstfU4ZvwkAuoy+hrUgYFlpgo+H9WFMQdyYB8jdNUF7goRmNFsruFLxLRjzDtmHqQtyOYVAgUbW1qL9YeSSouLdDaUoV+t08wqaeK0v6TA5jnfCuDoIVOECAuLG7xHJwIDAQAB",
   "permissions": ["debugger", "tabs", "alarms"],

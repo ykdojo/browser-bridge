@@ -3,6 +3,7 @@
 // extension. The extension connects out to us; we send it CDP commands.
 // Tool names and input shapes are kept consistent with Claude for Chrome's.
 import { readFileSync } from "fs";
+import { createServer } from "http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import WebSocket, { WebSocketServer } from "ws";
@@ -11,6 +12,7 @@ import { z } from "zod";
 const PORT = Number(process.env.BRIDGE_PORT ?? 17333);
 const EXTENSION_ID = process.env.BRIDGE_EXTENSION_ID ?? "epjnmpnkphfbonblfmfeokijfhmjcfne";
 const log = (...a) => console.error("[browser-bridge]", ...a); // stdout belongs to MCP
+const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url)));
 const MIN_EXTENSION = "0.6.0"; // first extension version that reports dialogs and file pickers
 const olderThan = (a, b) => a.localeCompare(b, undefined, { numeric: true }) < 0;
 
@@ -48,8 +50,8 @@ function failPending(sock, reason) {
 }
 
 async function call(msg, timeoutMs = 30000) {
-  // Right after startup or a takeover the extension needs a moment to reconnect:
-  // it retries every 10s at most, so wait a little longer than that.
+  // Right after startup or a takeover the extension needs a moment to reconnect.
+  // It looks for us every 2s while awake; allow for a slow start.
   for (let i = 0; i < 48 && (ext ?? upstream)?.readyState !== 1; i++) await sleep(250);
   const sock = ext ?? upstream;
   if (!sock || sock.readyState !== 1) throw new Error(NOT_CONNECTED);
@@ -62,20 +64,30 @@ async function call(msg, timeoutMs = 30000) {
 }
 
 function start() {
+  // Plain HTTP on the same port says who we are. The extension asks this before
+  // it opens a WebSocket: Chrome prints an error on chrome://extensions for a
+  // refused WebSocket, which code can't catch, and nothing for a refused fetch.
+  // No CORS headers, so a web page can't read the answer.
+  const http = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify({ name: "browser-bridge", version }));
+  });
   const wss = new WebSocketServer({
-    host: "127.0.0.1",
-    port: PORT,
+    server: http,
     // Browsers always send a truthful Origin, so this blocks web pages and other extensions.
     // Peers are local non-browser processes: no Origin, plus our header.
     verifyClient: ({ origin, req }) => origin === `chrome-extension://${EXTENSION_ID}` || (!origin && req.headers["x-bridge-peer"] === "1"),
   });
-  wss.on("listening", () => log(`primary, waiting for extension on ws://127.0.0.1:${PORT}`));
-  wss.on("error", (e) => {
+  wss.on("error", () => {}); // ws re-emits the http server's errors; they are handled below
+  http.on("listening", () => log(`primary, waiting for extension on ws://127.0.0.1:${PORT}`));
+  http.on("error", (e) => {
     wss.close();
+    http.close();
     if (e.code === "EADDRINUSE") return joinAsPeer();
     log(String(e));
     setTimeout(start, 2000);
   });
+  http.listen(PORT, "127.0.0.1");
   wss.on("connection", (sock, req) => {
     if (req.headers["x-bridge-peer"] === "1") {
       sock.on("message", async (data) => {
@@ -131,7 +143,9 @@ start();
 // the tab that the agent could not otherwise see, like a JavaScript dialog it
 // dismissed. They are queued per tab and appended to the next tool result.
 const notices = new Map(); // tabId -> notice objects
+let lastTabId = null; // the tab the agent most recently worked in
 async function cdp(tabId, method, params) {
+  lastTabId = tabId;
   const r = await call({ type: "cdp", tabId, method, params });
   if (r?.__bridgeNotices) {
     notices.set(tabId, [...(notices.get(tabId) ?? []), ...r.__bridgeNotices]);
@@ -145,7 +159,7 @@ function describeNotice(n) {
   if (n.kind === "filechooser") return "The page tried to open a file picker, which was suppressed: native file dialogs can't be operated through this bridge, and file uploads aren't supported.";
   if (n.kind === "dialog") {
     const what = `A JavaScript ${n.dialogType} dialog${n.message ? ` ("${n.message}")` : ""}`;
-    if (n.dialogType === "beforeunload") return n.accepted ? "The page's unsaved-changes prompt was accepted (force)." : "The page showed an unsaved-changes prompt and the bridge chose to stay on the page.";
+    if (n.dialogType === "beforeunload") return n.accepted ? "The page's unsaved-changes prompt was accepted." : "The page showed an unsaved-changes prompt and the bridge chose to stay on the page.";
     if (n.dialogType === "alert") return `${what} opened and was dismissed automatically.`;
     return `${what} opened and was cancelled automatically, since dialogs block the page. To answer it differently, override window.${n.dialogType} with javascript_tool before triggering it (e.g. window.confirm = () => true).`;
   }
@@ -429,7 +443,6 @@ async function waitForLoad(tabId) {
 }
 
 // ---- tools ----------------------------------------------------------------
-const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url)));
 const server = new McpServer({ name: "browser-bridge", version });
 const text = (t) => ({ content: [{ type: "text", text: typeof t === "string" ? t : JSON.stringify(t, null, 1) }] });
 function withNotices(tabId, result) {
@@ -463,8 +476,8 @@ tool("tabs_context", "Get context information about all open tabs in the user's 
   return result;
 });
 
-tool("tabs_create", "Creates a new empty tab in the user's Chrome and returns its tab ID. Use navigate to load a URL in it.", {}, async () =>
-  text(await call({ type: "tabs.create", url: "about:blank" })));
+tool("tabs_create", "Creates a new empty tab in the user's Chrome, next to the tab you last worked in, and returns its tab ID. Use navigate to load a URL in it.", {}, async () =>
+  text(await call({ type: "tabs.create", url: "about:blank", nearTabId: lastTabId })));
 
 tool("tabs_close", "Close a tab by its tab ID. Get valid IDs from tabs_context.", { tabId: tabIdParam }, async ({ tabId }) => {
   try {
@@ -483,31 +496,26 @@ tool("navigate", "Navigate a tab to a URL, or go forward/back in browser history
   await cdp(tabId, "Page.enable");
   refMaps.delete(tabId); // old refs die with the old document, even when the navigation fails (error page)
   // A page with unsaved changes answers a navigation with a "Leave site?"
-  // prompt. The extension answers it for us: leave if forced, stay otherwise.
+  // prompt. The extension answers it: leave if forced, stay otherwise, and
+  // reports which as a notice.
   if (force) await call({ type: "dialogs.policy", tabId, acceptBeforeunload: true }).catch(() => {});
-  const stayed = () => {
-    const queued = notices.get(tabId) ?? [];
-    const i = queued.findIndex((n) => n.kind === "dialog" && n.dialogType === "beforeunload" && !n.accepted);
-    if (i < 0) return false;
-    queued.splice(i, 1);
-    return true;
-  };
-  const BLOCKED = "The page asked to confirm leaving because of unsaved changes, so the navigation was cancelled and the tab is still on the same page. Pass force: true to discard the changes and navigate anyway.";
+  let result, errorText;
   if (url === "back" || url === "forward") {
     const { currentIndex, entries } = await cdp(tabId, "Page.getNavigationHistory");
     const target = entries[currentIndex + (url === "back" ? -1 : 1)];
     if (!target) throw new Error(`No ${url} entry in this tab's history`);
     await cdp(tabId, "Page.navigateToHistoryEntry", { entryId: target.id });
-    await waitForLoad(tabId);
-    if (stayed()) throw new Error(BLOCKED);
-    return text(`went ${url} to ${target.url}`);
+    result = `went ${url} to ${target.url}`;
+  } else {
+    url = /^[a-z]+:/i.test(url) ? url : `https://${url}`;
+    errorText = (await cdp(tabId, "Page.navigate", { url })).errorText;
+    result = "navigated to " + url;
   }
-  const full = /^[a-z]+:/i.test(url) ? url : `https://${url}`;
-  const r = await cdp(tabId, "Page.navigate", { url: full });
   await waitForLoad(tabId);
-  if (stayed()) throw new Error(BLOCKED);
-  if (r.errorText) throw new Error(`${r.errorText} (${full})`);
-  return text("navigated to " + full);
+  const stayed = (notices.get(tabId) ?? []).some((n) => n.kind === "dialog" && n.dialogType === "beforeunload" && !n.accepted);
+  if (stayed) throw new Error("The page asked to confirm leaving because of unsaved changes, so the navigation was cancelled and the tab is still on the same page. Pass force: true to discard the changes and navigate anyway.");
+  if (errorText) throw new Error(`${errorText} (${url})`);
+  return text(result);
 });
 
 tool("read_page", "Get an accessibility tree representation of the page: a structured text tree of elements, the way a screen reader sees it. Elements carry reference IDs like [ref_3] usable with the computer, form_input and other tools. Prefer this over screenshots for reading and locating elements.", {

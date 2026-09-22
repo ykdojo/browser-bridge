@@ -71,13 +71,16 @@ function locate(img, match) {
 const magenta = (r, g, b) => r > 200 && g < 90 && b > 200;
 const lime = (r, g, b) => r < 90 && g > 200 && b < 90;
 
-let pass = 0, fail = 0;
-const check = (label, ok, info = "") => { ok ? pass++ : fail++; console.log(`${ok ? "PASS" : "FAIL"}  ${label}${info !== "" ? "  -- " + info : ""}`); };
+let pass = 0, fail = 0, last = "(startup)";
+// This suite takes about 40 seconds. A hang must fail loudly, not wait forever.
+const LIMIT_MS = 3 * 60 * 1000;
+setTimeout(() => { console.log(`FAIL  suite exceeded ${LIMIT_MS / 1000}s; stuck after: "${last}"\n\ne2e: ${pass} passed, ${fail + 1} failed`); process.exit(1); }, LIMIT_MS).unref();
+const check = (label, ok, info = "") => { last = label; ok ? pass++ : fail++; console.log(`${ok ? "PASS" : "FAIL"}  ${label}${info !== "" ? "  -- " + info : ""}`); };
 const section = (name) => console.log(`\n# ${name}`);
 
 const c = await mcpClient().init();
 const { call } = c;
-let tabId = null, c4 = null;
+let tabId = null, c4 = null, win = null;
 const js = async (code) => (await call("javascript_tool", { action: "javascript_exec", tabId, text: code })).txt;
 const events = async () => JSON.parse(await js("JSON.stringify(window.events.splice(0))"));
 const rect = async (id) => JSON.parse(await js(`JSON.stringify(document.getElementById("${id}").getBoundingClientRect())`));
@@ -103,12 +106,23 @@ try {
   }
   check("extension reloaded from disk", loaded === onDisk, loaded ? `${loaded}, on disk ${onDisk}` : "the loaded extension predates the reload command: reload it once by hand at chrome://extensions");
   if (loaded !== onDisk) throw new Error("extension out of date");
+  // From here to the end, mirror what Chrome prints into the extension's own
+  // console: that is what fills its Errors page on chrome://extensions.
+  await raw({ type: "console.watch" });
+  await raw({ type: "diagnostics", clear: true });
   const ui0 = nativeUi();
   check("no native menu or file picker open beforehand", !ui0 || (ui0.menus === 0 && ui0.panels === 0), ui0 ? JSON.stringify(ui0) : "not macOS: native UI checks are skipped");
   if (ui0 && (ui0.menus || ui0.panels)) throw new Error("a native menu or dialog is open in Chrome: click inside the window to dismiss it, then rerun");
 
+  // The suite gets a window of its own. In a window a person is using, Chrome
+  // may keep every tab rendering (tab previews, screen capture), which breaks
+  // the hidden-tab checks, and a person's clicks would land in test pages.
+  win = await raw({ type: "windows.create" });
+  await call("javascript_tool", { action: "javascript_exec", tabId: win.tabId, text: "1" }); // work in that window once, so tabs_create follows
   tabId = JSON.parse((await call("tabs_create")).txt).tabId;
   check("tabs_create", Number.isInteger(tabId));
+  await sleep(300);
+  check("the new tab landed in the suite's own window", (await raw({ type: "tabs.list" })).some((t) => t.tabId === tabId) && (await rawCdp(win.tabId, "Runtime.evaluate", { expression: "document.visibilityState", returnByValue: true })).result.value === "hidden", "the window's first tab should now be covered by the new one");
   check("navigate", !(await call("navigate", { tabId, url: PAGE })).err);
 
   section("read_page / find / get_page_text");
@@ -286,14 +300,22 @@ try {
 
   section("a tab that is not the visible one");
   // Chrome stops drawing hidden tabs and mouse input waits on drawing: unfixed, this click took 5s and this scroll never returned.
-  const other = JSON.parse((await call("tabs_create")).txt).tabId; // takes over as the visible tab
-  await sleep(500);
-  check("the test tab is hidden now", (await js("document.visibilityState")) === "hidden");
+  const other = (await raw({ type: "tabs.create", url: "about:blank", windowId: win.windowId })).tabId; // takes over as the visible tab
+  let vis;
+  for (let i = 0; i < 20 && vis !== "hidden"; i++) { await sleep(250); vis = await js("document.visibilityState"); }
+  // Chrome sometimes keeps every tab of a window rendering (tab hover
+  // previews, screen capture), and then a covered tab stays "visible" and the
+  // slow path this section guards against can't occur. Measured: it comes and
+  // goes on the same machine within minutes. The bridge's behavior is the same
+  // either way (it switches on `active`, not visibility), so record which
+  // situation this run got instead of failing on Chrome's mood.
+  const covered = (await raw({ type: "tabs.list" })).find((t) => t.tabId === tabId)?.active === false;
+  check("the test tab is covered by another tab", covered, vis === "hidden" ? "and Chrome stopped rendering it" : "but Chrome kept rendering it, so this run can't show the slow path");
   let tb = Date.now();
   const bgClick = await computer({ action: "left_click", ref: btn });
   check("click: fast, lands, and the tab switch is reported", Date.now() - tb < 3000 && (await events()).some((e) => e.type === "click" && e.id === "btn") && bgClick.all.includes("was in the background"), `${Date.now() - tb}ms`);
   await raw({ type: "tabs.activate", tabId: other });
-  await sleep(500);
+  for (let i = 0; i < 20 && (await js("document.visibilityState")) !== "hidden"; i++) await sleep(250);
   tb = Date.now();
   await computer({ action: "scroll", scroll_direction: "down", coordinate: [900, 300] });
   check("scroll: returns and scrolls", Date.now() - tb < 3000 && Number(await js("scrollY")) > 0, `${Date.now() - tb}ms`);
@@ -403,7 +425,7 @@ try {
   section("the extension's own pages");
   const extId = "epjnmpnkphfbonblfmfeokijfhmjcfne";
   for (const [page, expected] of [["popup.html", "Connected to a local agent server"], ["about.html", "The twelve tools"]]) {
-    const t = (await raw({ type: "tabs.create", url: `chrome-extension://${extId}/${page}` })).tabId;
+    const t = (await raw({ type: "tabs.create", url: `chrome-extension://${extId}/${page}`, windowId: win.windowId })).tabId;
     await sleep(800);
     const seen = (await call("get_page_text", { tabId: t })).txt;
     check(`${page} renders`, seen.includes(expected), seen.slice(0, 80).replace(/\n/g, " "));
@@ -413,27 +435,33 @@ try {
   section("extension health");
   const diag = await raw({ type: "diagnostics" });
   check("the extension logged no errors during the run", diag.errors.length === 0, JSON.stringify(diag.errors).slice(0, 200));
+  check("Chrome printed nothing into the extension's console (its Errors page stays clean)", diag.console.length === 0, JSON.stringify(diag.console).slice(0, 200));
+  const knock = await raw({ type: "probe", port: 18445 }); // nothing listens there
+  await sleep(700);
+  check("a refused fetch is silent, which is what lets the extension look for a server quietly", knock.startsWith("rejected") && (await raw({ type: "diagnostics" })).console.length === 0, knock);
 
   section("a command that outlives its connection");
   if (!c.log.includes("primary, waiting")) console.log("SKIP  another server owns the port, so this one cannot take the connection down");
   else {
-    const t = (await raw({ type: "tabs.create", url: PAGE, active: false })).tabId;
+    const t = (await raw({ type: "tabs.create", url: PAGE, active: false, windowId: win.windowId })).tabId;
     await sleep(1500);
     await raw({ type: "cdp", tabId: t, method: "Runtime.evaluate", params: { expression: "new Promise(r => setTimeout(() => r(42), 3000))", awaitPromise: true } }, { wait: false });
     await sleep(500);
     c.p.kill(); // the connection dies with the command still running in the page
-    await sleep(4000); // ...and the command finishes with nobody to answer
+    await sleep(7000); // ...the command finishes with nobody to answer, and for a while no server runs at all
     c4 = await mcpClient().init();
     for (let i = 0; i < 45; i++) { if (!(await c4.call("tabs_context")).err) break; await sleep(1000); }
     const after = await raw({ type: "diagnostics" });
     check("its reply is withheld, not sent on a dead or newer connection", after.droppedReplies === diag.droppedReplies + 1 && after.errors.length === 0, `dropped ${diag.droppedReplies} -> ${after.droppedReplies}`);
+    check("with no server running, the extension kept looking without a single error", after.console.length === 0, JSON.stringify(after.console).slice(0, 200));
     await raw({ type: "tabs.close", tabId: t });
   }
 } catch (e) {
-  console.error("\nSUITE ERROR:", e.message);
+  console.log(`SUITE ERROR after "${last}": ${e.message}`);
   fail++;
 } finally {
-  if (tabId != null) await call("tabs_close", { tabId }).catch(() => {}); // cleanup after a failed run
+  if (win) await raw({ type: "windows.close", windowId: win.windowId }).catch(() => {}); // takes any leftover test tabs with it
+  await raw({ type: "console.watch", on: false }).catch(() => {});
 }
 console.log(`\ne2e: ${pass} passed, ${fail} failed`);
 http.close(); c.p.kill(); c4?.p.kill();
