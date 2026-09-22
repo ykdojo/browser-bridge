@@ -27,7 +27,7 @@ Design choices:
 - **Quiet when idle.** With no server running the extension knocks with `fetch` every 2s, which Chrome doesn't log, and only then opens the WebSocket.
 - **Several profiles.** Each profile with the extension connects; the latest is active, and the toolbar popup can switch.
 - **Origin check, not a token.** The extension ID is fixed, and the server only accepts connections whose `Origin` is that ID, which pages and other extensions can't forge. A local process could, so this isn't a defense against malware on the machine.
-- **No tab scoping yet.** The agent gets every tab in its profile.
+- **Every tab, not a tab group.** The agent sees and works in any tab open in its profile. Claude for Chrome only reaches tabs in its own tab group, so a tab you already have open has to be dragged into that group, or Claude has to open a new one.
 
 Known gaps: no per-origin allowlist or confirmations yet. `read_page` and `find` don't see inside iframes (coordinate clicks do reach them). Sessions share tabs with no locking between them.
 
