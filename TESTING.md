@@ -4,7 +4,7 @@ How this repo is tested, and a log of what testing found. Newest first.
 
 ## The two suites
 
-`npm test` in `server/` runs both. Current state: relay 23/23, e2e 122/122. Relay takes about 30s, e2e about 45s; each aborts itself past 2 or 3 minutes, naming the last check that passed.
+`npm test` in `server/` runs both. Current state: relay 23/23, e2e 128/128 (one skipped while another session owns the port). Relay takes about 30s, e2e about 45s; each aborts itself past 2 or 3 minutes, naming the last check that passed.
 
 **`test:relay`** needs no browser: fake extensions talk to real server processes on a separate port.
 
@@ -16,7 +16,7 @@ How this repo is tested, and a log of what testing found. Newest first.
 - Notices reach the tool result once, including through a peer
 - Outdated extension is called out; a stuck `tabs_close` explains itself after 10s
 
-**`test:e2e`** drives all 12 tools through the real extension and Chrome, against a local page that records every event it receives. It asserts effects (page state, timing, OS windows), reloads the extension from disk first, and works in a Chrome window of its own.
+**`test:e2e`** drives all 12 tools through the real extension and Chrome, against a local page that records every event it receives. It asserts effects (page state, timing, OS windows), reloads the extension from disk first, and works in the Chrome window you are using: its tabs open in the background and stay there, and it gives you your tab back after the one check that opens a foreground tab. Not covered: `tabs_create` making a window when Chrome has none open, which would need all your windows closed.
 
 - **read_page / find / get_page_text**: filters, depth, truncation, subtree focus, ranking, no duplicate hits, no-match message
 - **Clicks**: by ref and by pixel, the pixel found by decoding the screenshot; single, double, triple, right, modifiers; on an emulated 2x display; on a scrolled page
@@ -35,6 +35,10 @@ How this repo is tested, and a log of what testing found. Newest first.
 Not covered: `read_page`/`find` inside iframes (not implemented); service worker suspension (can't be forced); two real profiles (fake ones only); Windows/Linux; real sites. About one run in ten dies with a `computer` timeout; the suite names where.
 
 ## Log (all 2026-09-21)
+
+**Background tabs and the 🌉 group.** `tabs_create` took over the tab the person was looking at. It now opens in the background (`active: true` on request) and in a "🌉" group whose title and color show whether the agent is active or done. Found on the way: `chrome.tabs.group` without `createProperties` puts the new group in the focused window, not the tab's, which dragged test tabs into the person's window; and a window created with `focused: false` still took focus (measured by reading the frontmost window before and after). The suite no longer makes a window: it works in the person's window like an agent does, opens every tab in the background, tracks what it opened, and gives the person their tab back at the end.
+
+**No more switching to the tab.** Mouse actions used to make the agent's tab the visible one, which is exactly the focus-stealing a person notices. Measured on fresh hidden tabs: a click landed in 15ms as is, a wheel scroll never returned; with `Emulation.setFocusEmulationEnabled` both took about 13ms, while `Page.setWebLifecycleState` and `Page.startScreencast` changed nothing. The extension now enables focus emulation on attach, the server never activates a tab, and the whole suite runs on a tab the person never sees. Found on the way: a tab that has never been shown renders with the primary display's pixel ratio and color space (2x and Display P3 here) rather than its window's display (1x, sRGB), and adopts the window's the first time it is shown. Screenshot coordinates are unaffected (the clip scales by the page's ratio), colors are P3-encoded, so the suite's lime match is loose.
 
 **Simplification pass.** Extension rewritten from 15 message types and 27 globals into four sections, 349 to 303 lines; suites passed unchanged. Chrome was found to intermittently keep covered tabs rendering (comes and goes within minutes, nothing from the bridge in between), so the hidden-tab check asserts what the bridge controls. The suite got its own window; `tabs_create` follows the agent's window.
 

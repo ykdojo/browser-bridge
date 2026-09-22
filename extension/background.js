@@ -5,7 +5,7 @@
 // the browser as events occur: buffering console/network events, answering
 // JavaScript dialogs, and reporting on this extension itself.
 //
-// Sections: per-tab state, self-reporting, commands, the server link.
+// Sections: per-tab state, the agent's tab group, self-reporting, commands, the server link.
 
 const SERVER = "127.0.0.1:17333";
 const RETRY_MS = 2000;
@@ -56,8 +56,11 @@ async function attach(tabId) {
     if (!/already attached/i.test(String(e?.message ?? e))) throw e;
   }
   t.attached = true;
-  const cdp = (method) => chrome.debugger.sendCommand({ tabId }, method).catch(() => {});
-  await Promise.all([cdp("Runtime.enable"), cdp("Network.enable"), cdp("Page.enable")]);
+  const cdp = (method, params) => chrome.debugger.sendCommand({ tabId }, method, params).catch(() => {});
+  // Focus emulation makes Chrome take mouse input on a hidden tab. Measured: a
+  // wheel scroll on a background tab never returned without it, 13ms with it.
+  // So the agent's tab never has to be switched to.
+  await Promise.all([cdp("Runtime.enable"), cdp("Network.enable"), cdp("Page.enable"), cdp("Emulation.setFocusEmulationEnabled", { enabled: true })]);
   return true;
 }
 
@@ -113,6 +116,36 @@ chrome.debugger.onEvent.addListener(({ tabId, targetId }, method, params) => {
   }
 });
 
+// ---- the agent's tab group -------------------------------------------------
+// Tabs the agent opens go into a "🌉" group in their window, so a person can
+// tell them from their own. The group reads "🌉 active" (blue) while a command
+// runs in one of its tabs and "🌉 done" (grey) once it has been quiet for a
+// moment: that is how a person sees the agent is finished. A person's own
+// tabs are never grouped.
+const MARK = "🌉";
+const ACTIVE = { title: `${MARK} active`, color: "blue" };
+const DONE = { title: `${MARK} done`, color: "grey" };
+const QUIET_MS = 1500;
+const quiet = new Map(); // groupId -> timer that marks the group done
+const ours = (g) => g?.title?.startsWith(MARK);
+
+async function groupTab(tabId, windowId) {
+  const g = (await chrome.tabGroups.query({ windowId })).find(ours);
+  // Without createProperties a new group lands in the focused window, not the tab's.
+  if (g) return chrome.tabs.group({ tabIds: tabId, groupId: g.id });
+  await chrome.tabGroups.update(await chrome.tabs.group({ tabIds: tabId, createProperties: { windowId } }), DONE);
+}
+
+// Called as a command on the tab starts and again as it ends, so a long
+// command keeps the group active throughout.
+async function showWorking(tabId) {
+  const groupId = (await chrome.tabs.get(tabId).catch(() => ({}))).groupId;
+  if (!(groupId >= 0) || !ours(await chrome.tabGroups.get(groupId))) return;
+  if (!quiet.has(groupId)) await chrome.tabGroups.update(groupId, ACTIVE);
+  clearTimeout(quiet.get(groupId));
+  quiet.set(groupId, setTimeout(() => (quiet.delete(groupId), chrome.tabGroups.update(groupId, DONE).catch(() => {})), QUIET_MS));
+}
+
 // ---- self-reporting --------------------------------------------------------
 // This extension's own failures show only on chrome://extensions, where
 // nothing automated can look. So it keeps what a person would see there:
@@ -153,14 +186,18 @@ async function watchOwnConsole(on) {
 
 // ---- commands --------------------------------------------------------------
 const commands = {
-  // tabs and windows
-  "tabs.list": async () => (await chrome.tabs.query({})).map((t) => ({ tabId: t.id, title: t.title, url: t.url, active: t.active })),
+  // tabs
+  "tabs.list": async () => (await chrome.tabs.query({})).map((t) => ({ tabId: t.id, windowId: t.windowId, groupId: t.groupId, title: t.title, url: t.url, active: t.active })),
   "tabs.create": async ({ url, active = true, windowId, nearTabId }) => {
-    // Open next to the tab the agent last worked in, so an agent given its own
-    // window stays there instead of landing in whichever window has focus.
+    // Open in the window of the tab the agent last worked in, not in whichever
+    // window happens to have focus.
     if (windowId == null && nearTabId != null) windowId = await chrome.tabs.get(nearTabId).then((t) => t.windowId, () => undefined);
-    return { tabId: (await chrome.tabs.create({ url, active, windowId })).id };
+    // Only with no window open at all does the agent get one made; it never gets a window of its own otherwise.
+    const t = (await chrome.windows.getAll()).length ? await chrome.tabs.create({ url, active, windowId }) : (await chrome.windows.create({ url })).tabs[0];
+    await groupTab(t.id, t.windowId);
+    return { tabId: t.id };
   },
+  "groups.list": async () => (await chrome.tabGroups.query({})).map((g) => ({ groupId: g.id, windowId: g.windowId, title: g.title, color: g.color })),
   "tabs.close": async ({ tabId }) => {
     // Closing is leaving: accept the page's "Leave site?" prompt if it has one.
     const t = tab(tabId);
@@ -169,19 +206,12 @@ const commands = {
     return { closed: true };
   },
   "tabs.activate": async ({ tabId }) => {
-    // Chrome stops drawing hidden tabs, and mouse input waits on drawing: a
-    // click takes 5s and a wheel scroll never returns. Switching the visible
-    // tab of its window fixes that without taking OS focus from the person.
+    // Only the suite uses this, to give the person their tab back after a
+    // check opened one in the foreground. Nothing an agent does switches tabs.
     if ((await chrome.tabs.get(tabId)).active) return { switched: false };
     await chrome.tabs.update(tabId, { active: true });
     return { switched: true };
   },
-  "windows.create": async ({ url = "about:blank" } = {}) => {
-    // A window of the agent's own, so its tabs never sit in one a person is using.
-    const w = await chrome.windows.create({ url, focused: false, width: 1280, height: 900 });
-    return { windowId: w.id, tabId: w.tabs[0].id };
-  },
-  "windows.close": async ({ windowId }) => (await chrome.windows.remove(windowId), { closed: true }),
 
   // the tab's page
   cdp: async ({ tabId, method, params = {} }) => {
@@ -268,6 +298,8 @@ async function connect() {
     const msg = JSON.parse(e.data);
     if (msg.type === "active") return void (self_.isActive = msg.value); // an announcement, not a request
     let reply;
+    const working = msg.tabId != null && msg.type !== "tabs.close";
+    if (working) showWorking(msg.tabId).catch(() => {});
     try {
       const run = commands[msg.type];
       if (!run) throw new Error("unknown message type " + msg.type);
@@ -275,6 +307,7 @@ async function connect() {
     } catch (err) {
       reply = { id: msg.id, error: String(err?.message ?? err) };
     }
+    if (working) showWorking(msg.tabId).catch(() => {});
     // Answer on the connection that asked, and only if it is still there. A
     // command can outlive its connection, and its reply must not land on a
     // newer connection with reused ids.

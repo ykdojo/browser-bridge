@@ -155,7 +155,6 @@ async function cdp(tabId, method, params) {
 }
 
 function describeNotice(n) {
-  if (n.kind === "activated") return "This tab was in the background, so its browser window was switched to it: Chrome only processes mouse input for a visible tab.";
   if (n.kind === "filechooser") return "The page tried to open a file picker, which was suppressed: native file dialogs can't be operated through this bridge, and file uploads aren't supported.";
   if (n.kind === "dialog") {
     const what = `A JavaScript ${n.dialogType} dialog${n.message ? ` ("${n.message}")` : ""}`;
@@ -340,17 +339,6 @@ async function withFileChooserBlocked(tabId, fn) {
   }
 }
 
-// Chrome stops drawing a hidden tab, and mouse input waits on drawing: measured
-// on a background tab, a click took 5s and a wheel scroll never returned. So
-// mouse actions first make the tab the visible one in its window. That does not
-// take OS focus, and it is reported to the agent when it happens.
-async function ensureVisible(tabId) {
-  const r = await call({ type: "tabs.activate", tabId }).catch(() => null); // older extension: carry on as before
-  if (!r?.switched) return;
-  notices.set(tabId, [...(notices.get(tabId) ?? []), { kind: "activated" }]);
-  await sleep(250); // let it start drawing again
-}
-
 // Runs inside the page: scroll whatever a wheel at (x, y) would have scrolled.
 function pageScrollBy(x, y, dx, dy) {
   let el = document.elementFromPoint(x, y);
@@ -364,7 +352,6 @@ function pageScrollBy(x, y, dx, dy) {
 
 async function clickAt(tabId, x, y, { button = "left", clickCount = 1, modifiers = 0 } = {}) {
   await guard(tabId, x, y, button === "right" ? "right" : "left");
-  await ensureVisible(tabId);
   await withFileChooserBlocked(tabId, async () => {
     await mouse(tabId, "mouseMoved", x, y, { modifiers });
     await mouse(tabId, "mousePressed", x, y, { button, clickCount, modifiers });
@@ -476,8 +463,12 @@ tool("tabs_context", "Get context information about all open tabs in the user's 
   return result;
 });
 
-tool("tabs_create", "Creates a new empty tab in the user's Chrome, next to the tab you last worked in, and returns its tab ID. Use navigate to load a URL in it.", {}, async () =>
-  text(await call({ type: "tabs.create", url: "about:blank", nearTabId: lastTabId })));
+// The tab opens in the background and stays there: the person keeps the tab
+// they were looking at, and every tool works on a hidden tab.
+tool("tabs_create", "Creates a new empty tab in the user's Chrome, next to the tab you last worked in and in the 🌉 tab group, and returns its tab ID. Use navigate to load a URL in it. The tab opens in the background so the user keeps the tab they are looking at; pass active: true only when the user has asked to watch you work.", {
+  active: z.boolean().optional().describe("Bring the new tab to the foreground. Default false. Use only when the user asked to watch."),
+}, async ({ active = false }) =>
+  text(await call({ type: "tabs.create", url: "about:blank", active, nearTabId: lastTabId })));
 
 tool("tabs_close", "Close a tab by its tab ID. Get valid IDs from tabs_context.", { tabId: tabIdParam }, async ({ tabId }) => {
   try {
@@ -696,11 +687,11 @@ tool("computer", "Use a mouse and keyboard to interact with the page in a tab, a
       const p = (await point(false)) ?? await evalJs(tabId, "({x: window.innerWidth/2, y: window.innerHeight/2})").then((r) => r.value);
       const d = (a.scroll_amount ?? 3) * 120;
       const [dx, dy] = { up: [0, -d], down: [0, d], left: [-d, 0], right: [d, 0] }[a.scroll_direction];
-      await ensureVisible(tabId);
-      // Still hidden (minimized or fully covered window): a wheel event would
-      // never return, so move the scroll position from inside the page instead.
-      if ((await evalJs(tabId, "document.visibilityState")).value === "hidden") await evalJs(tabId, `(${pageScrollBy})(${p.x}, ${p.y}, ${dx}, ${dy})`);
-      else await mouse(tabId, "mouseWheel", p.x, p.y, { deltaX: dx, deltaY: dy });
+      // A wheel event returns on a hidden tab thanks to focus emulation (see the
+      // extension's attach). Should Chrome still withhold it, as in a minimized
+      // window, move the scroll position from inside the page instead.
+      const wheel = mouse(tabId, "mouseWheel", p.x, p.y, { deltaX: dx, deltaY: dy }).then(() => true);
+      if (!(await Promise.race([wheel, sleep(2000).then(() => false)]))) await evalJs(tabId, `(${pageScrollBy})(${p.x}, ${p.y}, ${dx}, ${dy})`);
       // The wheel event returns before the scroll lands; without this a
       // screenshot or read right after would still show the old position.
       await sleep(300);
@@ -713,14 +704,12 @@ tool("computer", "Use a mouse and keyboard to interact with the page in a tab, a
     }
     case "hover": {
       const p = await point();
-      await ensureVisible(tabId);
       await mouse(tabId, "mouseMoved", p.x, p.y);
       return text(`hovering at ${Math.round(p.x)},${Math.round(p.y)}`);
     }
     case "left_click_drag": {
       if (!a.start_coordinate || !a.coordinate) throw new Error("left_click_drag needs start_coordinate and coordinate");
       const [sx, sy] = a.start_coordinate, [ex, ey] = a.coordinate;
-      await ensureVisible(tabId);
       await mouse(tabId, "mouseMoved", sx, sy);
       await mouse(tabId, "mousePressed", sx, sy, { button: "left", clickCount: 1 });
       const steps = 8;

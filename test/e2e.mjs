@@ -57,6 +57,9 @@ const rawCdp = (tabId, method, params = {}) => raw({ type: "cdp", tabId, method,
 const JXA = `ObjC.import("CoreGraphics"); const list = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)); let menus = 0, panels = 0; for (let i = 0; i < list.count; i++) { const w = ObjC.deepUnwrap(list.objectAtIndex(i)); const o = String(w.kCGWindowOwnerName); if (o.includes("Chrome") && w.kCGWindowLayer == 101) menus++; if (o.includes("Open and Save Panel")) panels++; } JSON.stringify({menus: menus, panels: panels})`;
 const nativeUi = () => (process.platform === "darwin" ? JSON.parse(execSync(`osascript -l JavaScript -e '${JXA}'`).toString()) : null);
 const noNativeUi = async () => { await sleep(600); const n = nativeUi(); return n === null || (n.menus === 0 && n.panels === 0); };
+// The window the person is looking at, so the suite can prove it never took it. macOS only.
+const FRONT = `const p = Application("System Events").applicationProcesses.whose({frontmost: true})[0]; JSON.stringify(p.name() + ": " + (p.windows.length ? p.windows[0].name() : ""))`;
+const frontWindow = () => (process.platform === "darwin" ? JSON.parse(execSync(`osascript -l JavaScript -e '${FRONT}'`).toString()).replace(/[◐◑◒◓]/g, "") : null); // minus a terminal's spinner glyph
 
 // What an agent does with a screenshot: look at the pixels, pick a point.
 function locate(img, match) {
@@ -68,8 +71,11 @@ function locate(img, match) {
   }
   return { width, height, n, x: n ? sx / n : null, y: n ? sy / n : null };
 }
+// Loose on purpose: a tab that has never been shown renders in the primary
+// display's color space (Display P3 on a Mac), where sRGB lime reads about
+// (118, 250, 75) and magenta (234, 50, 248). See TESTING.md.
 const magenta = (r, g, b) => r > 200 && g < 90 && b > 200;
-const lime = (r, g, b) => r < 90 && g > 200 && b < 90;
+const lime = (r, g, b) => r < 140 && g > 200 && b < 100;
 
 let pass = 0, fail = 0, last = "(startup)";
 // This suite takes about 40 seconds. A hang must fail loudly, not wait forever.
@@ -81,6 +87,7 @@ const section = (name) => console.log(`\n# ${name}`);
 const c = await mcpClient().init();
 const { call } = c;
 let tabId = null, c4 = null, win = null;
+const opened = new Set(); // every tab the suite creates, so a run cut short still cleans up
 const js = async (code) => (await call("javascript_tool", { action: "javascript_exec", tabId, text: code })).txt;
 const events = async () => JSON.parse(await js("JSON.stringify(window.events.splice(0))"));
 const rect = async (id) => JSON.parse(await js(`JSON.stringify(document.getElementById("${id}").getBoundingClientRect())`));
@@ -114,16 +121,39 @@ try {
   check("no native menu or file picker open beforehand", !ui0 || (ui0.menus === 0 && ui0.panels === 0), ui0 ? JSON.stringify(ui0) : "not macOS: native UI checks are skipped");
   if (ui0 && (ui0.menus || ui0.panels)) throw new Error("a native menu or dialog is open in Chrome: click inside the window to dismiss it, then rerun");
 
-  // The suite gets a window of its own. In a window a person is using, Chrome
-  // may keep every tab rendering (tab previews, screen capture), which breaks
-  // the hidden-tab checks, and a person's clicks would land in test pages.
-  win = await raw({ type: "windows.create" });
-  await call("javascript_tool", { action: "javascript_exec", tabId: win.tabId, text: "1" }); // work in that window once, so tabs_create follows
+  // The suite works in the window the person is using, like an agent does: its
+  // tabs open in the background and stay there. A window of its own was
+  // measured to take focus even when created unfocused.
+  const front0 = frontWindow();
   tabId = JSON.parse((await call("tabs_create")).txt).tabId;
+  opened.add(tabId);
   check("tabs_create", Number.isInteger(tabId));
   await sleep(300);
-  check("the new tab landed in the suite's own window", (await raw({ type: "tabs.list" })).some((t) => t.tabId === tabId) && (await rawCdp(win.tabId, "Runtime.evaluate", { expression: "document.visibilityState", returnByValue: true })).result.value === "hidden", "the window's first tab should now be covered by the new one");
+  const listed = await raw({ type: "tabs.list" });
+  const mine = listed.find((t) => t.tabId === tabId);
+  win = { windowId: mine?.windowId, tabId: listed.find((t) => t.windowId === mine?.windowId && t.active && t.tabId !== tabId)?.tabId }; // the person's window and tab
+  check("the new tab opens in the person's window without taking focus", win.tabId != null && frontWindow() === front0, front0 ?? "not macOS: focus check skipped");
+  // The person keeps the tab they were looking at: the new one opens behind it.
+  check("tabs_create opens in the background", mine?.active === false);
+  // The person can tell the agent's tabs from their own: they sit in a "🌉" group.
+  const group = (await raw({ type: "groups.list" })).find((g) => g.groupId === mine?.groupId);
+  check("the new tab is in the 🌉 group of its window", group?.title?.startsWith("🌉") && group.windowId === win.windowId, JSON.stringify(group));
+  check("the person's own tab is not pulled into it", listed.find((t) => t.tabId === win.tabId)?.groupId !== group?.groupId);
+  const fg = JSON.parse((await call("tabs_create", { active: true })).txt).tabId;
+  opened.add(fg);
+  const fgTab = (await raw({ type: "tabs.list" })).find((t) => t.tabId === fg);
+  check("tabs_create active: true takes the foreground, in the window the agent last worked in", fgTab?.active === true && fgTab.windowId === win.windowId);
+  await call("tabs_close", { tabId: fg });
+  await raw({ type: "tabs.activate", tabId: win.tabId }); // closing the foreground tab may have revealed the test tab; give the person theirs back
+  check("the person's tab is in front again", (await raw({ type: "tabs.list" })).find((t) => t.tabId === win.tabId)?.active === true);
   check("navigate", !(await call("navigate", { tabId, url: PAGE })).err);
+  // The group reads "🌉 active" while the agent works in it and "🌉 done" once it has been quiet.
+  const label = async () => { const g = (await raw({ type: "groups.list" })).find((g) => g.groupId === group.groupId); return `${g?.title} ${g?.color}`; };
+  let lab;
+  for (let i = 0; i < 10 && lab !== "🌉 active blue"; i++) { lab = await label(); if (lab !== "🌉 active blue") await sleep(100); }
+  check("the group reads active while a command runs", lab === "🌉 active blue", lab);
+  for (let i = 0; i < 30 && lab !== "🌉 done grey"; i++) { await sleep(100); lab = await label(); }
+  check("the group reads done once the agent has been quiet", lab === "🌉 done grey", lab);
 
   section("read_page / find / get_page_text");
   const all = (await call("read_page", { tabId })).txt;
@@ -298,29 +328,21 @@ try {
   await computer({ action: "scroll", scroll_direction: "up", scroll_amount: 10, coordinate: [900, 300] });
   check("scroll up and left back to origin", (await js("scrollX + ',' + scrollY")) === "0,0");
 
-  section("a tab that is not the visible one");
-  // Chrome stops drawing hidden tabs and mouse input waits on drawing: unfixed, this click took 5s and this scroll never returned.
-  const other = (await raw({ type: "tabs.create", url: "about:blank", windowId: win.windowId })).tabId; // takes over as the visible tab
-  let vis;
-  for (let i = 0; i < 20 && vis !== "hidden"; i++) { await sleep(250); vis = await js("document.visibilityState"); }
-  // Chrome sometimes keeps every tab of a window rendering (tab hover
-  // previews, screen capture), and then a covered tab stays "visible" and the
-  // slow path this section guards against can't occur. Measured: it comes and
-  // goes on the same machine within minutes. The bridge's behavior is the same
-  // either way (it switches on `active`, not visibility), so record which
-  // situation this run got instead of failing on Chrome's mood.
-  const covered = (await raw({ type: "tabs.list" })).find((t) => t.tabId === tabId)?.active === false;
-  check("the test tab is covered by another tab", covered, vis === "hidden" ? "and Chrome stopped rendering it" : "but Chrome kept rendering it, so this run can't show the slow path");
+  section("the tab stays in the background");
+  // Every check so far ran on a tab the person never saw. Chrome withholds mouse
+  // input from a hidden tab (a wheel scroll never returned) unless focus is
+  // emulated, which the extension turns on when it attaches. Chrome sometimes
+  // keeps covered tabs rendering anyway (tab previews, screen capture; it comes
+  // and goes within minutes), so the visibility state is recorded, not asserted.
+  const vis = await js("document.visibilityState");
+  check("the test tab is still not the active one", (await raw({ type: "tabs.list" })).find((t) => t.tabId === tabId)?.active === false, vis === "hidden" ? "and Chrome stopped rendering it" : "though Chrome kept rendering it, so this run can't show the slow path");
   let tb = Date.now();
-  const bgClick = await computer({ action: "left_click", ref: btn });
-  check("click: fast, lands, and the tab switch is reported", Date.now() - tb < 3000 && (await events()).some((e) => e.type === "click" && e.id === "btn") && bgClick.all.includes("was in the background"), `${Date.now() - tb}ms`);
-  await raw({ type: "tabs.activate", tabId: other });
-  for (let i = 0; i < 20 && (await js("document.visibilityState")) !== "hidden"; i++) await sleep(250);
+  await computer({ action: "left_click", ref: btn });
+  check("click on the hidden tab: fast and lands", Date.now() - tb < 1500 && (await events()).some((e) => e.type === "click" && e.id === "btn"), `${Date.now() - tb}ms`);
   tb = Date.now();
   await computer({ action: "scroll", scroll_direction: "down", coordinate: [900, 300] });
-  check("scroll: returns and scrolls", Date.now() - tb < 3000 && Number(await js("scrollY")) > 0, `${Date.now() - tb}ms`);
-  check("reading a hidden tab needs no switch", !(await call("read_page", { tabId, filter: "interactive" })).all.includes("was in the background"));
-  await call("tabs_close", { tabId: other });
+  check("scroll on the hidden tab: a real wheel event, fast", Date.now() - tb < 1500 && Number(await js("scrollY")) > 0, `${Date.now() - tb}ms`);
+  check("neither switched the person's window to it", (await raw({ type: "tabs.list" })).find((t) => t.tabId === tabId)?.active === false);
   await js("scrollTo(0, 0)");
 
   section("scrolled page: scroll_to, screenshot and zoom offsets");
@@ -425,7 +447,8 @@ try {
   section("the extension's own pages");
   const extId = "epjnmpnkphfbonblfmfeokijfhmjcfne";
   for (const [page, expected] of [["popup.html", "Connected to a local agent server"], ["about.html", "The twelve tools"]]) {
-    const t = (await raw({ type: "tabs.create", url: `chrome-extension://${extId}/${page}`, windowId: win.windowId })).tabId;
+    const t = (await raw({ type: "tabs.create", url: `chrome-extension://${extId}/${page}`, active: false, windowId: win.windowId })).tabId;
+    opened.add(t);
     await sleep(800);
     const seen = (await call("get_page_text", { tabId: t })).txt;
     check(`${page} renders`, seen.includes(expected), seen.slice(0, 80).replace(/\n/g, " "));
@@ -444,6 +467,7 @@ try {
   if (!c.log.includes("primary, waiting")) console.log("SKIP  another server owns the port, so this one cannot take the connection down");
   else {
     const t = (await raw({ type: "tabs.create", url: PAGE, active: false, windowId: win.windowId })).tabId;
+    opened.add(t);
     await sleep(1500);
     await raw({ type: "cdp", tabId: t, method: "Runtime.evaluate", params: { expression: "new Promise(r => setTimeout(() => r(42), 3000))", awaitPromise: true } }, { wait: false });
     await sleep(500);
@@ -460,7 +484,9 @@ try {
   console.log(`SUITE ERROR after "${last}": ${e.message}`);
   fail++;
 } finally {
-  if (win) await raw({ type: "windows.close", windowId: win.windowId }).catch(() => {}); // takes any leftover test tabs with it
+  const left = (await raw({ type: "tabs.list" }).catch(() => [])).filter((t) => opened.has(t.tabId));
+  for (const t of left) await raw({ type: "tabs.close", tabId: t.tabId }).catch(() => {});
+  if (win?.tabId != null) await raw({ type: "tabs.activate", tabId: win.tabId }).catch(() => {}); // the person gets their tab back
   await raw({ type: "console.watch", on: false }).catch(() => {});
 }
 console.log(`\ne2e: ${pass} passed, ${fail} failed`);

@@ -23,7 +23,8 @@ Design choices:
 - **Native UI never opens.** Synthetic input can open Chrome's context menu, `<select>` popups and file pickers but can never close them, and an open native menu stalls tab closing browser-wide. All three are prevented; page-drawn context menus still work.
 - **Dialogs never freeze the tab.** `alert`/`confirm`/`prompt`/"Leave site?" prompts the agent causes are answered at once and reported in the next result. Ones a person causes are left alone.
 - **Screenshots are 1:1 with click coordinates**, whatever the display scaling.
-- **Mouse input first makes the tab visible** in its window, since Chrome doesn't process it for a hidden tab. Reading and typing work on hidden tabs as they are. Give an agent its own window to browse alongside it: `tabs_create` stays in the window the agent last worked in.
+- **New tabs open in the background**, in the window the agent last worked in, and never in a window of their own. `tabs_create` keeps the tab you are looking at unless you ask the agent to work in the foreground (`active: true`). Every tool works on a hidden tab, mouse input included, so the agent never switches your window to its tab.
+- **The agent's tabs are marked.** Tabs it opens sit in a "🌉" tab group that reads "🌉 active" while a command runs in one of them and "🌉 done" once it has been quiet for a moment. Your own tabs are never grouped.
 - **Quiet when idle.** With no server running the extension knocks with `fetch` every 2s, which Chrome doesn't log, and only then opens the WebSocket.
 - **Several profiles.** Each profile with the extension connects; the latest is active, and the toolbar popup can switch.
 - **Origin check, not a token.** The extension ID is fixed, and the server only accepts connections whose `Origin` is that ID, which pages and other extensions can't forge. A local process could, so this isn't a defense against malware on the machine.
