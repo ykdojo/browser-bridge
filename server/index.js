@@ -460,7 +460,9 @@ async function waitForLoad(tabId) {
 }
 
 // ---- tools ----------------------------------------------------------------
-const server = new McpServer({ name: "browser-bridge", version });
+const server = new McpServer({ name: "browser-bridge", version }, {
+  instructions: "Browser Bridge works in the user's own Chrome. Call tabs_context first to see what tabs exist. Tabs you open sit in a 🌉 tab group; call done when the browser part of a task is complete so the group shows the user its tabs are free.",
+});
 const text = (t) => ({ content: [{ type: "text", text: typeof t === "string" ? t : JSON.stringify(t, null, 1) }] });
 function withNotices(tabId, result) {
   const queued = notices.get(tabId);
@@ -484,7 +486,7 @@ const refParam = z.string().describe('Element reference ID from the read_page or
 
 const controllable = (url) => /^(https?|file):/.test(url) && !/^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/.test(url);
 
-tool("tabs_context", "Get context information about all open tabs in the user's Chrome: tab IDs, titles, URLs and which tab is active. Call this before other browser tools so you know what tabs exist. Tabs marked controllable: false (browser pages like chrome://) can be seen but not read or acted on.", {}, async () => {
+tool("tabs_context", "Get context information about all open tabs in the user's Chrome: tab IDs, titles, URLs and which tab is active. Call this before other browser tools so you know what tabs exist, and call done when you have finished with the browser. Tabs marked controllable: false (browser pages like chrome://) can be seen but not read or acted on.", {}, async () => {
   const tabs = await call({ type: "tabs.list" });
   const result = text(tabs.map((t) => ({ ...t, controllable: controllable(t.url) })));
   // The server and the unpacked extension update separately; say so when they drift.
