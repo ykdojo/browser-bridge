@@ -22,6 +22,7 @@ Instructions for AI agents (and people) changing this repo. `CLAUDE.md` is a sym
 
 - **Synthetic input must never open native OS UI**: Chrome's context menu, `<select>` popups, file pickers. It cannot be closed again, and on macOS an open native menu stalls tab closing for the whole browser until a person clicks. JavaScript dialogs freeze the tab the same way. Every new input path needs the same guards.
 - **Mouse input on a hidden tab needs focus emulation.** Without it a wheel scroll never returned; with `Emulation.setFocusEmulationEnabled` it took 13ms. The extension turns it on when it attaches. Never switch the person's window to the agent's tab.
+- **A "Leave site?" prompt brings the tab to the foreground**, before the extension can answer it. So the prompt must never be allowed to show: anything that leaves a page asks the page first and silences its objection when leaving anyway. The suite's watchdog fails the run if the person's tab stops being the active one at any point.
 - **Reply on the connection that asked**, and only if it is still open. A command can outlive its connection.
 - Tool names and input shapes stay consistent with Claude for Chrome's. `reference/` (gitignored) holds definitions extracted from that extension: never commit, cite, or copy from it. Implementations here are written independently.
 

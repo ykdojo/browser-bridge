@@ -403,6 +403,36 @@ async function evalJs(tabId, expression) {
   return r.result;
 }
 
+// Chrome brings a tab to the foreground to show a "Leave site?" prompt, even
+// though the extension answers it at once (measured: a background tab was the
+// active one right after). So the prompt must never appear. Before leaving a
+// page, the bridge asks the page's own handlers whether they would object, by
+// dispatching a beforeunload event that unloads nothing, and when it is going
+// to leave anyway it first takes away their means of objecting.
+const WOULD_PROMPT = `(() => {
+  // Chrome only shows the prompt once the page has had a user gesture, and a
+  // page restored from the back/forward cache has had none.
+  if (!navigator.userActivation?.hasBeenActive) return false;
+  // Already silenced: the same document can come back from the back/forward cache.
+  if (BeforeUnloadEvent.prototype.preventDefault !== Event.prototype.preventDefault) return false;
+  let flagged = false;
+  const e = new Event("beforeunload", { cancelable: true });
+  Object.defineProperty(e, "returnValue", { get: () => "", set: (v) => { if (v) flagged = true; } });
+  const h = window.onbeforeunload; window.onbeforeunload = null;
+  try { window.dispatchEvent(e); } finally { window.onbeforeunload = h; }
+  let r = null; try { r = typeof h === "function" ? h.call(window, e) : null; } catch {}
+  return flagged || e.defaultPrevented || (r != null && r !== false);
+})()`;
+const SILENCE_PROMPT = `(() => {
+  const p = BeforeUnloadEvent.prototype;
+  Object.defineProperty(p, "returnValue", { configurable: true, get: () => "", set: () => {} });
+  p.preventDefault = function () {};
+  window.onbeforeunload = null; if (document.body) document.body.onbeforeunload = null;
+  return true;
+})()`;
+const wouldPrompt = (tabId) => evalJs(tabId, WOULD_PROMPT).then((r) => r.value === true, () => false);
+const silencePrompt = (tabId) => evalJs(tabId, SILENCE_PROMPT).catch(() => {});
+
 // Screenshots are always 1 image pixel per CSS pixel, whatever the display's
 // device pixel ratio, so coordinates read off a screenshot are valid click
 // coordinates. `region` ([x0, y0, x1, y1] in viewport pixels) zooms instead.
@@ -465,12 +495,16 @@ tool("tabs_context", "Get context information about all open tabs in the user's 
 
 // The tab opens in the background and stays there: the person keeps the tab
 // they were looking at, and every tool works on a hidden tab.
-tool("tabs_create", "Creates a new empty tab in the user's Chrome, next to the tab you last worked in and in the 🌉 tab group, and returns its tab ID. Use navigate to load a URL in it. The tab opens in the background so the user keeps the tab they are looking at; pass active: true only when the user has asked to watch you work.", {
+tool("tabs_create", "Creates a new empty tab in the user's Chrome, next to the tab you last worked in and in the 🌉 tab group, and returns its tab ID. Call done when you have finished with the browser. Use navigate to load a URL in it. The tab opens in the background so the user keeps the tab they are looking at; pass active: true only when the user has asked to watch you work.", {
   active: z.boolean().optional().describe("Bring the new tab to the foreground. Default false. Use only when the user asked to watch."),
 }, async ({ active = false }) =>
   text(await call({ type: "tabs.create", url: "about:blank", active, nearTabId: lastTabId })));
 
+tool("done", "Tell the user you have finished with the browser: the 🌉 tab group turns from active or idle to done. Call it once the browser part of a task is complete, so the user can see the tabs are free to look at or close. Working in a tab again turns the group active.", {}, async () =>
+  text(await call({ type: "groups.done" })));
+
 tool("tabs_close", "Close a tab by its tab ID. Get valid IDs from tabs_context.", { tabId: tabIdParam }, async ({ tabId }) => {
+  await silencePrompt(tabId); // closing is leaving; the extension also accepts a prompt that shows regardless
   try {
     return text(await call({ type: "tabs.close", tabId }, 10000));
   } catch (e) {
@@ -486,9 +520,16 @@ tool("navigate", "Navigate a tab to a URL, or go forward/back in browser history
 }, async ({ url, tabId, force }) => {
   await cdp(tabId, "Page.enable");
   refMaps.delete(tabId); // old refs die with the old document, even when the navigation fails (error page)
-  // A page with unsaved changes answers a navigation with a "Leave site?"
-  // prompt. The extension answers it: leave if forced, stay otherwise, and
-  // reports which as a notice.
+  // A page with unsaved changes would answer a navigation with a "Leave site?"
+  // prompt, which Chrome shows in the foreground. So the page is asked first:
+  // without force the navigation is held back here, with force the page's
+  // objection is silenced. Should a prompt show regardless, the extension
+  // answers it the same way and reports which as a notice.
+  const HELD = "The page asked to confirm leaving because of unsaved changes, so the navigation was cancelled and the tab is still on the same page. Pass force: true to discard the changes and navigate anyway.";
+  if (await wouldPrompt(tabId)) {
+    if (!force) throw new Error(HELD);
+    await silencePrompt(tabId);
+  }
   if (force) await call({ type: "dialogs.policy", tabId, acceptBeforeunload: true }).catch(() => {});
   let result, errorText;
   if (url === "back" || url === "forward") {
@@ -504,7 +545,7 @@ tool("navigate", "Navigate a tab to a URL, or go forward/back in browser history
   }
   await waitForLoad(tabId);
   const stayed = (notices.get(tabId) ?? []).some((n) => n.kind === "dialog" && n.dialogType === "beforeunload" && !n.accepted);
-  if (stayed) throw new Error("The page asked to confirm leaving because of unsaved changes, so the navigation was cancelled and the tab is still on the same page. Pass force: true to discard the changes and navigate anyway.");
+  if (stayed) throw new Error(HELD);
   if (errorText) throw new Error(`${errorText} (${url})`);
   return text(result);
 });

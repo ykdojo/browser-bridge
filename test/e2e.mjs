@@ -57,10 +57,11 @@ const rawCdp = (tabId, method, params = {}) => raw({ type: "cdp", tabId, method,
 const JXA = `ObjC.import("CoreGraphics"); const list = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)); let menus = 0, panels = 0; for (let i = 0; i < list.count; i++) { const w = ObjC.deepUnwrap(list.objectAtIndex(i)); const o = String(w.kCGWindowOwnerName); if (o.includes("Chrome") && w.kCGWindowLayer == 101) menus++; if (o.includes("Open and Save Panel")) panels++; } JSON.stringify({menus: menus, panels: panels})`;
 const nativeUi = () => (process.platform === "darwin" ? JSON.parse(execSync(`osascript -l JavaScript -e '${JXA}'`).toString()) : null);
 const noNativeUi = async () => { await sleep(600); const n = nativeUi(); return n === null || (n.menus === 0 && n.panels === 0); };
-// The window the person is looking at, so the suite can prove it never took it. macOS only.
-const FRONT = `const p = Application("System Events").applicationProcesses.whose({frontmost: true})[0]; JSON.stringify(p.name() + ": " + (p.windows.length ? p.windows[0].name() : ""))`;
-const frontWindow = () => (process.platform === "darwin" ? JSON.parse(execSync(`osascript -l JavaScript -e '${FRONT}'`).toString()).replace(/[◐◑◒◓]/g, "") : null); // minus a terminal's spinner glyph
-
+// The app the person is looking at, so the suite can prove it never took
+// focus. Only the app: a terminal's window title changes as it works, and
+// once made this check fail for that. macOS only.
+const FRONT = `JSON.stringify(Application("System Events").applicationProcesses.whose({frontmost: true})[0].name())`;
+const frontApp = () => (process.platform === "darwin" ? JSON.parse(execSync(`osascript -l JavaScript -e '${FRONT}'`).toString()) : null);
 // What an agent does with a screenshot: look at the pixels, pick a point.
 function locate(img, match) {
   const { width, height, data } = jpeg.decode(Buffer.from(img.data, "base64"), { useTArray: true });
@@ -127,7 +128,7 @@ try {
   // The suite works in the window the person is using, like an agent does: its
   // tabs open in the background and stay there. A window of its own was
   // measured to take focus even when created unfocused.
-  const front0 = frontWindow();
+  const front0 = frontApp();
   tabId = JSON.parse((await call("tabs_create")).txt).tabId;
   opened.add(tabId);
   check("tabs_create", Number.isInteger(tabId));
@@ -135,27 +136,46 @@ try {
   const listed = await raw({ type: "tabs.list" });
   const mine = listed.find((t) => t.tabId === tabId);
   personsTab = listed.find((t) => t.windowId === mine?.windowId && t.active && t.tabId !== tabId);
-  check("the new tab opens in the person's window without taking focus", personsTab != null && frontWindow() === front0, front0 ?? "not macOS: focus check skipped");
+  check("the new tab opens in the person's window without taking focus", personsTab != null && frontApp() === front0, front0 ?? "not macOS: focus check skipped");
   // The person keeps the tab they were looking at: the new one opens behind it.
   check("tabs_create opens in the background", mine?.active === false);
+  // From here on, the person's tab must stay the active one in its window.
+  // A poll names the check during which it stopped being, and the last check
+  // of the run reports it: nothing in this suite may take the foreground.
+  const stolen = []; // [{ during, by: the tab that took over }]
+  const watchdog = setInterval(async () => {
+    const tabs = await raw({ type: "tabs.list" }).catch(() => null);
+    const front = tabs?.find((t) => t.windowId === personsTab.windowId && t.active);
+    if (front && front.tabId !== personsTab.tabId && stolen.at(-1)?.during !== last) stolen.push({ during: last, by: `${front.tabId} ${front.url}` });
+  }, 250);
+  watchdog.unref();
   // The person can tell the agent's tabs from their own: they sit in a "🌉" group.
   const group = await groupInfo(mine?.groupId);
   check("the new tab is in the 🌉 group of its window", group?.title?.startsWith("🌉") && group.windowId === mine.windowId, JSON.stringify(group));
   check("the person's own tab is not pulled into it", personsTab?.groupId !== group?.groupId);
-  const fg = JSON.parse((await call("tabs_create", { active: true })).txt).tabId;
-  opened.add(fg);
-  const fgTab = await tabInfo(fg);
-  check("tabs_create active: true takes the foreground, in the window the agent last worked in", fgTab?.active === true && fgTab.windowId === mine.windowId);
-  await call("tabs_close", { tabId: fg });
-  await raw({ type: "tabs.activate", tabId: personsTab.tabId }); // closing the foreground tab may have revealed the test tab; give the person theirs back
-  check("the person's tab is in front again", (await tabInfo(personsTab.tabId))?.active === true);
+  // Nothing in this suite ever takes the foreground: `tabs_create` with
+  // active: true is deliberately not exercised, since the tab it brings up
+  // flashes over whatever the person is doing on every run.
   check("navigate", !(await call("navigate", { tabId, url: PAGE })).err);
-  // The group reads "🌉 active" while the agent works in it and "🌉 done" once it has been quiet.
+  // The group's label is only ever true: "🌉 active" while the agent works in it,
+  // "🌉 idle" once it has been quiet, "🌉 done" only when the agent says so. Idle
+  // never turns into done on its own, so the label can't flip while the agent thinks.
   const label = async () => { const g = await groupInfo(group.groupId); return `${g?.title} ${g?.color}`; };
-  let lab = await until(label, "🌉 active blue", 10);
-  check("the group reads active while a command runs", lab === "🌉 active blue", lab);
-  lab = await until(label, "🌉 done grey", 30);
-  check("the group reads done once the agent has been quiet", lab === "🌉 done grey", lab);
+  let lab = await until(label, "🌉 active orange", 10);
+  check("the group reads active while a command runs", lab === "🌉 active orange", lab);
+  await raw({ type: "groups.idleAfter", ms: 1000 }); // 30s by default; the suite can't wait that long
+  await call("get_page_text", { tabId }); // restart the timer at the short setting
+  lab = await until(label, "🌉 idle blue", 30);
+  check("the group reads idle once the agent has been quiet", lab === "🌉 idle blue", lab);
+  await sleep(1500);
+  check("idle does not become done on its own", (await label()) === "🌉 idle blue");
+  await call("done");
+  lab = await until(label, "🌉 done grey", 10);
+  check("done marks the group done", lab === "🌉 done grey", lab);
+  await call("get_page_text", { tabId });
+  lab = await until(label, "🌉 active orange", 10);
+  check("working in the tab again makes it active", lab === "🌉 active orange", lab);
+  await raw({ type: "groups.idleAfter", ms: 30000 });
 
   section("read_page / find / get_page_text");
   const all = (await call("read_page", { tabId })).txt;
@@ -457,6 +477,10 @@ try {
     await call("tabs_close", { tabId: t });
   }
 
+  section("nothing took the foreground");
+  clearInterval(watchdog);
+  check("the person's tab stayed the active one throughout", stolen.length === 0, stolen.length ? `taken over during: ${stolen.map((x) => `"${x.during}" by ${x.by}`).join("; ")}` : "");
+
   section("extension health");
   const diag = await raw({ type: "diagnostics" });
   check("the extension logged no errors during the run", diag.errors.length === 0, JSON.stringify(diag.errors).slice(0, 200));
@@ -488,7 +512,7 @@ try {
 } finally {
   const left = (await raw({ type: "tabs.list" }).catch(() => [])).filter((t) => opened.has(t.tabId));
   for (const t of left) await raw({ type: "tabs.close", tabId: t.tabId }).catch(() => {});
-  if (personsTab) await raw({ type: "tabs.activate", tabId: personsTab.tabId }).catch(() => {}); // the person gets their tab back
+  await raw({ type: "groups.idleAfter", ms: 30000 }).catch(() => {}); // in case a run was cut short at the short setting
   await raw({ type: "console.watch", on: false }).catch(() => {});
 }
 console.log(`\ne2e: ${pass} passed, ${fail} failed`);

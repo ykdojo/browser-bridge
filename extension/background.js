@@ -118,22 +118,28 @@ chrome.debugger.onEvent.addListener(({ tabId, targetId }, method, params) => {
 
 // ---- the agent's tab group -------------------------------------------------
 // Tabs the agent opens go into a "🌉" group in their window, so a person can
-// tell them from their own. The group reads "🌉 active" (blue) while a command
-// runs in one of its tabs and "🌉 done" (grey) once it has been quiet for a
-// moment: that is how a person sees the agent is finished. A person's own
-// tabs are never grouped.
+// tell them from their own. The group's title and color say what the agent is
+// up to, and each label is only ever true:
+//   "🌉 active" (orange)  a command ran in one of its tabs in the last 30s
+//   "🌉 idle"   (blue)    nothing for 30s, but nobody has said the task is over
+//   "🌉 done"   (grey)    the agent said so, or the server went away
+// Idle never turns into done on its own: an agent thinks for seconds between
+// commands, and a timer alone made the label flip back and forth. A person's
+// own tabs are never grouped.
 const MARK = "🌉";
-const ACTIVE = { title: `${MARK} active`, color: "blue" };
+const ACTIVE = { title: `${MARK} active`, color: "orange" };
+const IDLE = { title: `${MARK} idle`, color: "blue" };
 const DONE = { title: `${MARK} done`, color: "grey" };
-const QUIET_MS = 1500;
-const quiet = new Map(); // groupId -> timer that marks the group done
+let idleMs = 30000; // the suite shortens it
+const busy = new Map(); // groupId -> timer that marks the group idle
 const ours = (g) => g?.title?.startsWith(MARK);
+const ourGroups = async () => (await chrome.tabGroups.query({})).filter(ours);
 
 async function groupTab(tabId, windowId) {
   const g = (await chrome.tabGroups.query({ windowId })).find(ours);
   // Without createProperties a new group lands in the focused window, not the tab's.
   if (g) return chrome.tabs.group({ tabIds: tabId, groupId: g.id });
-  await chrome.tabGroups.update(await chrome.tabs.group({ tabIds: tabId, createProperties: { windowId } }), DONE);
+  await chrome.tabGroups.update(await chrome.tabs.group({ tabIds: tabId, createProperties: { windowId } }), IDLE);
 }
 
 // Called as a command on the tab starts and again as it ends, so a long
@@ -141,10 +147,20 @@ async function groupTab(tabId, windowId) {
 async function showWorking(tabId) {
   const groupId = (await chrome.tabs.get(tabId).catch(() => ({}))).groupId;
   if (!(groupId >= 0) || !ours(await chrome.tabGroups.get(groupId))) return;
-  if (!quiet.has(groupId)) await chrome.tabGroups.update(groupId, ACTIVE);
-  clearTimeout(quiet.get(groupId));
-  quiet.set(groupId, setTimeout(() => (quiet.delete(groupId), chrome.tabGroups.update(groupId, DONE).catch(() => {})), QUIET_MS));
+  if (!busy.has(groupId)) await chrome.tabGroups.update(groupId, ACTIVE);
+  clearTimeout(busy.get(groupId));
+  busy.set(groupId, setTimeout(() => (busy.delete(groupId), chrome.tabGroups.update(groupId, IDLE).catch(() => {})), idleMs));
 }
+
+async function showDone() {
+  for (const t of busy.values()) clearTimeout(t);
+  busy.clear();
+  await Promise.all((await ourGroups()).map((g) => chrome.tabGroups.update(g.id, DONE).catch(() => {})));
+}
+
+// This worker gets restarted, and its timers die with it: a group still
+// reading active then is stale, so it is settled to idle on every start.
+ourGroups().then((gs) => gs.filter((g) => g.title === ACTIVE.title).forEach((g) => chrome.tabGroups.update(g.id, IDLE).catch(() => {}))).catch(() => {});
 
 // ---- self-reporting --------------------------------------------------------
 // This extension's own failures show only on chrome://extensions, where
@@ -198,19 +214,14 @@ const commands = {
     return { tabId: t.id };
   },
   "groups.list": async () => (await chrome.tabGroups.query({})).map((g) => ({ groupId: g.id, windowId: g.windowId, title: g.title, color: g.color })),
+  "groups.done": async () => (await showDone(), { done: true }),
+  "groups.idleAfter": ({ ms }) => ((idleMs = ms), { idleMs }), // the suite, so it needn't wait 30s
   "tabs.close": async ({ tabId }) => {
     // Closing is leaving: accept the page's "Leave site?" prompt if it has one.
     const t = tab(tabId);
     t.leaveUntil = t.busyUntil = Date.now() + 10000;
     await chrome.tabs.remove(tabId);
     return { closed: true };
-  },
-  "tabs.activate": async ({ tabId }) => {
-    // Only the suite uses this, to give the person their tab back after a
-    // check opened one in the foreground. Nothing an agent does switches tabs.
-    if ((await chrome.tabs.get(tabId)).active) return { switched: false };
-    await chrome.tabs.update(tabId, { active: true });
-    return { switched: true };
   },
 
   // the tab's page
@@ -317,6 +328,7 @@ async function connect() {
   sock.onclose = () => {
     clearInterval(ping);
     if (ws === sock) (ws = null), (self_.isActive = null);
+    showDone().catch(() => {}); // the server exits with its client: the session is over
     setTimeout(connect, RETRY_MS);
   };
   sock.onerror = () => {};
