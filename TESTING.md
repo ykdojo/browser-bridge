@@ -4,17 +4,17 @@ How this repo is tested, and a running log of what testing found. Newest first.
 
 ## The two suites
 
-`npm test` in `server/` runs both. Current state: relay 22/22, e2e 110/110.
+`npm test` in `server/` runs both. Current state: relay 23/23, e2e 118/118.
 
 **`test:relay`** needs no browser. Fake extensions (WebSocket clients sending the extension's Origin) talk to real server processes on a separate port, so it never touches a live setup.
 
 - First server becomes primary, later ones join as peers and are relayed
 - A server exits when its client goes away, so a crashed agent session leaves no orphan holding the port
 - Origin check: web pages, other extensions and header-less clients are rejected
-- No extension: a clear error after a 5s grace period, not a hang
+- No extension: a clear error after a 12s grace period, not a hang
 - Extension drops mid-call: fails in milliseconds, not the 30s timeout. Same when the primary dies under a peer
 - Primary exits: a peer takes over the port and the extension follows
-- Two profiles: latest connected is active, icon click switches, closing one falls back to the other
+- Two profiles: latest connected is active, each is told whether it is the one in use, the popup's switch works, closing one falls back to the other
 - Extension notices reach the tool result, once, including through the relay
 - An outdated extension is called out in `tabs_context`. A stuck `tabs_close` explains itself after 10s
 
@@ -31,8 +31,10 @@ How this repo is tested, and a running log of what testing found. Newest first.
 - **Console / network**: levels, uncaught exceptions, onlyErrors, patterns, limit, clear, failed requests
 - **Navigation**: held at an unsaved-changes prompt without `force`, through it with `force`, back, forward, stale refs rejected, unreachable URL reported, tab recovers afterwards
 - **Error paths**: every `computer` action's missing or invalid arguments, unknown tab ids, page exceptions
+- **Hidden tabs**: a click on a background tab is fast, lands, and reports the tab switch; a scroll returns; reading needs no switch
 - **Sessions**: a second server joins as a peer and acts on the same tab
 - **Closing**: `tabs_close` goes through an unsaved-changes prompt, and nothing native is left open
+- **The extension itself**: its popup and "How it works" page render, it logged no errors during the run, and a command that outlives its connection has its reply withheld instead of sent on a dead or newer connection
 
 Not covered, and why:
 
@@ -43,6 +45,16 @@ Not covered, and why:
 - Real sites: single-page apps, virtualized lists, shadow-DOM-heavy UIs. This needs ordinary use, not a test page
 
 ## Log
+
+### Two errors on the extension's Errors page, and a run broken by switching tabs (2026-09-21)
+
+Both were verified before and after in a real Chrome, then turned into permanent checks.
+
+- **"WebSocket is already in CLOSING or CLOSED state".** The extension replied on whatever the current socket was when a command finished. A command that outlived its connection (tab closes stuck behind the native menu below) replied on a dead socket, and could have replied on a newer connection with reused ids. Reproduced by killing the server under a 5s in-page promise: the old logic called `send()` on a socket in readyState 3, the fix withholds the reply. The first attempt at observing this failed and was instructive: `send()` on a closed socket doesn't throw, Chrome only prints a console message, so an exception log sees nothing
+- **`ERR_CONNECTION_REFUSED` entries.** Expected whenever no server is running, and Chrome logs them where code can't silence them. The retry now backs off (2s, 4s, 8s, then every 10s) instead of every 2s forever. A 30s cap was tried first and dropped: measured, it made a new session wait too long for the browser
+- **A suite run failed while the Chrome window was in use.** Cause: the test tab was no longer the visible one. Measured on a hidden tab: reading, typing and screenshots fine, a click 5028ms, a wheel scroll never returned. After the fix (make the tab visible first): click 301ms, scroll 306ms
+- The extension had no way to report its own failures to anything automated. It now keeps an error log the bridge can read, and records any `send()` on a socket that isn't open (the exact condition behind that Chrome message), so e2e's "logged no errors" check covers it on every run
+- One later run failed 21 input checks while a person was using the same Chrome window. Two systematic causes were tested and ruled out, each with effects checked: keyboard input on a hidden tab works, and a dialog that opens in a hidden tab is dismissed and the next click lands. Untouched runs before and after were 118/118. So: the suite is not robust to someone driving the same window at the same time, and says so in AGENTS.md
 
 ### Growing the e2e suite found a browser-wedging bug (2026-09-21)
 

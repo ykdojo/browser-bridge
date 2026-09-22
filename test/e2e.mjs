@@ -41,10 +41,10 @@ function mcpClient() {
 
 // A raw message through the relay, for test setup the 12 tools don't expose
 // (display emulation, extension version and reload).
-function raw(msg) {
+function raw(msg, { wait = true } = {}) {
   return new Promise((res, rej) => {
     const ws = new WebSocket("ws://127.0.0.1:17333", { headers: { "x-bridge-peer": "1" } });
-    ws.on("open", () => ws.send(JSON.stringify({ id: 1, ...msg })));
+    ws.on("open", () => { ws.send(JSON.stringify({ id: 1, ...msg })); if (!wait) res(null); });
     ws.on("message", (d) => { const m = JSON.parse(d); ws.close(); m.error ? rej(new Error(m.error)) : res(m.result); });
     ws.on("error", rej);
   });
@@ -77,7 +77,7 @@ const section = (name) => console.log(`\n# ${name}`);
 
 const c = await mcpClient().init();
 const { call } = c;
-let tabId = null;
+let tabId = null, c4 = null;
 const js = async (code) => (await call("javascript_tool", { action: "javascript_exec", tabId, text: code })).txt;
 const events = async () => JSON.parse(await js("JSON.stringify(window.events.splice(0))"));
 const rect = async (id) => JSON.parse(await js(`JSON.stringify(document.getElementById("${id}").getBoundingClientRect())`));
@@ -284,6 +284,23 @@ try {
   await computer({ action: "scroll", scroll_direction: "up", scroll_amount: 10, coordinate: [900, 300] });
   check("scroll up and left back to origin", (await js("scrollX + ',' + scrollY")) === "0,0");
 
+  section("a tab that is not the visible one");
+  // Chrome stops drawing hidden tabs and mouse input waits on drawing: unfixed, this click took 5s and this scroll never returned.
+  const other = JSON.parse((await call("tabs_create")).txt).tabId; // takes over as the visible tab
+  await sleep(500);
+  check("the test tab is hidden now", (await js("document.visibilityState")) === "hidden");
+  let tb = Date.now();
+  const bgClick = await computer({ action: "left_click", ref: btn });
+  check("click: fast, lands, and the tab switch is reported", Date.now() - tb < 3000 && (await events()).some((e) => e.type === "click" && e.id === "btn") && bgClick.all.includes("was in the background"), `${Date.now() - tb}ms`);
+  await raw({ type: "tabs.activate", tabId: other });
+  await sleep(500);
+  tb = Date.now();
+  await computer({ action: "scroll", scroll_direction: "down", coordinate: [900, 300] });
+  check("scroll: returns and scrolls", Date.now() - tb < 3000 && Number(await js("scrollY")) > 0, `${Date.now() - tb}ms`);
+  check("reading a hidden tab needs no switch", !(await call("read_page", { tabId, filter: "interactive" })).all.includes("was in the background"));
+  await call("tabs_close", { tabId: other });
+  await js("scrollTo(0, 0)");
+
   section("scrolled page: scroll_to, screenshot and zoom offsets");
   const low = JSON.parse((await call("find", { query: "Low target", tabId })).txt)[0];
   await computer({ action: "scroll_to", ref: low.ref });
@@ -382,6 +399,36 @@ try {
   check("tabs_close goes through an unsaved-changes prompt", !closed.err && !left.some((t) => t.tabId === tabId), closed.txt.slice(0, 80));
   if (!closed.err) tabId = null;
   check("nothing native left open", await noNativeUi());
+
+  section("the extension's own pages");
+  const extId = "epjnmpnkphfbonblfmfeokijfhmjcfne";
+  for (const [page, expected] of [["popup.html", "Connected to a local agent server"], ["about.html", "The twelve tools"]]) {
+    const t = (await raw({ type: "tabs.create", url: `chrome-extension://${extId}/${page}` })).tabId;
+    await sleep(800);
+    const seen = (await call("get_page_text", { tabId: t })).txt;
+    check(`${page} renders`, seen.includes(expected), seen.slice(0, 80).replace(/\n/g, " "));
+    await call("tabs_close", { tabId: t });
+  }
+
+  section("extension health");
+  const diag = await raw({ type: "diagnostics" });
+  check("the extension logged no errors during the run", diag.errors.length === 0, JSON.stringify(diag.errors).slice(0, 200));
+
+  section("a command that outlives its connection");
+  if (!c.log.includes("primary, waiting")) console.log("SKIP  another server owns the port, so this one cannot take the connection down");
+  else {
+    const t = (await raw({ type: "tabs.create", url: PAGE, active: false })).tabId;
+    await sleep(1500);
+    await raw({ type: "cdp", tabId: t, method: "Runtime.evaluate", params: { expression: "new Promise(r => setTimeout(() => r(42), 3000))", awaitPromise: true } }, { wait: false });
+    await sleep(500);
+    c.p.kill(); // the connection dies with the command still running in the page
+    await sleep(4000); // ...and the command finishes with nobody to answer
+    c4 = await mcpClient().init();
+    for (let i = 0; i < 45; i++) { if (!(await c4.call("tabs_context")).err) break; await sleep(1000); }
+    const after = await raw({ type: "diagnostics" });
+    check("its reply is withheld, not sent on a dead or newer connection", after.droppedReplies === diag.droppedReplies + 1 && after.errors.length === 0, `dropped ${diag.droppedReplies} -> ${after.droppedReplies}`);
+    await raw({ type: "tabs.close", tabId: t });
+  }
 } catch (e) {
   console.error("\nSUITE ERROR:", e.message);
   fail++;
@@ -389,5 +436,5 @@ try {
   if (tabId != null) await call("tabs_close", { tabId }).catch(() => {}); // cleanup after a failed run
 }
 console.log(`\ne2e: ${pass} passed, ${fail} failed`);
-http.close(); c.p.kill();
+http.close(); c.p.kill(); c4?.p.kill();
 process.exit(fail ? 1 : 0);

@@ -6,6 +6,23 @@ let ws = null;
 let pingTimer = null;
 const attached = new Set();
 
+// Whatever goes wrong in here otherwise only shows on chrome://extensions,
+// where neither an agent nor a test can look. Keep a copy the bridge can read.
+const errors = [];
+const logError = (e) => errors.push({ ts: Date.now(), message: String(e?.message ?? e) }) > 50 && errors.shift();
+self.addEventListener("error", (e) => logError(e.error ?? e.message));
+self.addEventListener("unhandledrejection", (e) => logError(e.reason));
+// Chrome prints "WebSocket is already in CLOSING or CLOSED state" exactly when
+// send() is called on a socket that is not open. It is not an exception, so
+// nothing above would see it. Record it here, where a test can.
+const nativeSend = WebSocket.prototype.send;
+WebSocket.prototype.send = function (data) {
+  if (this.readyState !== 1) logError(`send() on a WebSocket in readyState ${this.readyState}: ${String(data).slice(0, 80)}`);
+  return nativeSend.call(this, data);
+};
+let droppedReplies = 0; // replies withheld because the connection that asked was gone
+let isActive = null; // whether the server uses this profile; null until a server says
+
 // ---- event buffers --------------------------------------------------------
 // Capture begins when a tab is first attached. Buffers are capped, and network
 // entries reset when the tab moves to a different site (console persists,
@@ -150,6 +167,15 @@ async function handle(msg) {
       lastCmd.set(msg.tabId, Date.now());
       await chrome.tabs.remove(msg.tabId);
       return { closed: true };
+    case "tabs.activate": {
+      // Chrome stops drawing hidden tabs, and mouse input waits on drawing: a
+      // click takes 5s and a wheel scroll never returns. Switching the visible
+      // tab of that window fixes it without taking OS focus from the person.
+      const t = await chrome.tabs.get(msg.tabId);
+      if (t.active) return { switched: false };
+      await chrome.tabs.update(msg.tabId, { active: true });
+      return { switched: true };
+    }
     case "dialogs.policy":
       if (msg.acceptBeforeunload) leaveUntil.set(msg.tabId, Date.now() + 10000);
       return { ok: true };
@@ -187,6 +213,11 @@ async function handle(msg) {
     }
     case "version":
       return { version: chrome.runtime.getManifest().version };
+    case "diagnostics": {
+      const out = { version: chrome.runtime.getManifest().version, errors: [...errors], droppedReplies };
+      if (msg.clear) errors.length = 0;
+      return out;
+    }
     case "reload":
       // Re-reads the unpacked extension from disk. Answer first, then reload.
       setTimeout(() => chrome.runtime.reload(), 100);
@@ -196,27 +227,43 @@ async function handle(msg) {
   }
 }
 
+// Chrome logs every refused connection on the extension's Errors page and code
+// can't silence that, so back off while no server is running: 2s, 4s, 8s, then
+// every 10s. Not slower than that: a new agent session should find the browser
+// within seconds. The first retry stays fast because a peer server may be taking
+// over the port.
+let retryMs = 2000;
+
 function connect() {
   if (ws && ws.readyState <= 1) return;
-  ws = new WebSocket(URL_);
-  ws.onopen = () => {
+  const sock = (ws = new WebSocket(URL_));
+  sock.onopen = () => {
+    retryMs = 2000;
     // WebSocket traffic resets the service worker idle timer, so ping under 30s.
-    pingTimer = setInterval(() => ws?.readyState === 1 && ws.send('{"type":"ping"}'), 20000);
+    pingTimer = setInterval(() => sock.readyState === 1 && sock.send('{"type":"ping"}'), 20000);
   };
-  ws.onmessage = async (e) => {
+  sock.onmessage = async (e) => {
     const msg = JSON.parse(e.data);
+    if (msg.type === "active") return void (isActive = msg.value); // an announcement, not a request
+    let reply;
     try {
-      ws.send(JSON.stringify({ id: msg.id, result: await handle(msg) }));
+      reply = { id: msg.id, result: await handle(msg) };
     } catch (err) {
-      ws.send(JSON.stringify({ id: msg.id, error: String(err?.message ?? err) }));
+      reply = { id: msg.id, error: String(err?.message ?? err) };
     }
+    // Answer on the connection that asked, and only if it is still there. A
+    // command can outlive its connection (a tab close stuck behind a dialog),
+    // and its reply must not land on a newer connection with reused ids.
+    if (sock.readyState === 1) sock.send(JSON.stringify(reply));
+    else droppedReplies++;
   };
-  ws.onclose = () => {
+  sock.onclose = () => {
     clearInterval(pingTimer);
-    ws = null;
-    setTimeout(connect, 2000); // a peer server may be taking over the port
+    if (ws === sock) (ws = null), (isActive = null);
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, 10000);
   };
-  ws.onerror = () => {};
+  sock.onerror = () => {};
 }
 
 // The server may start after Chrome, so keep retrying.
@@ -224,10 +271,13 @@ chrome.alarms.create("reconnect", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
-// With the extension loaded in several Chrome profiles, the server talks to one
-// at a time. Clicking the icon makes this profile the active one.
-chrome.action.onClicked.addListener(() => {
-  connect();
-  if (ws?.readyState === 1) ws.send('{"type":"activate"}');
+// The toolbar popup (popup.html) asks for status and can make this profile the
+// one the server uses, for when the extension is loaded in several profiles.
+chrome.runtime.onMessage.addListener((msg, sender, respond) => {
+  if (msg.type === "activate") {
+    connect();
+    if (ws?.readyState === 1) ws.send('{"type":"activate"}');
+  }
+  respond({ connected: ws?.readyState === 1, isActive, version: chrome.runtime.getManifest().version });
 });
 connect();

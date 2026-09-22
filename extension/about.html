@@ -148,8 +148,8 @@ footer{color:var(--muted);font-size:14.5px;border-top:1px solid var(--line);padd
 <section>
   <h2>What happens when the agent clicks a button</h2>
   <ol class="steps">
-    <li><b>The agent asks for a snapshot.</b><span>The server sends <code>Accessibility.getFullAXTree</code> across the bridge and turns the result into indented text. Every element gets a number in brackets.</span></li>
-    <li><b>The agent picks a number.</b><span>It calls <code>click</code> with that ref. No screenshots or pixel guessing needed.</span></li>
+    <li><b>The agent reads the page.</b><span><code>read_page</code> sends <code>Accessibility.getFullAXTree</code> across the bridge and turns the result into indented text. Every element gets a ref in brackets.</span></li>
+    <li><b>The agent picks a ref.</b><span>It calls <code>computer</code> with <code>left_click</code> and that ref. No pixel guessing needed, though clicking a point read off a screenshot works too.</span></li>
     <li><b>The server finds where the element is.</b><span><code>DOM.scrollIntoViewIfNeeded</code>, then <code>DOM.getBoxModel</code> to get the center point.</span></li>
     <li><b>Chrome performs a real click.</b><span><code>Input.dispatchMouseEvent</code> sends move, press and release. The page sees a trusted event, the same as a person clicking.</span></li>
   </ol>
@@ -157,33 +157,34 @@ footer{color:var(--muted);font-size:14.5px;border-top:1px solid var(--line);padd
 
 <section>
   <h2>What the agent sees</h2>
-  <p>This is real <code>snapshot</code> output from a page in my browser. It is the page's accessibility tree, the same structure a screen reader uses.</p>
-<pre><span class="r">[5987]</span> <span class="k">RootWebArea</span> "Build Day room"
-  <span class="r">[5995]</span> <span class="k">main</span>
-    <span class="r">[5996]</span> <span class="k">heading</span> "Who is in the room"
-    <span class="r">[5997]</span> <span class="k">paragraph</span>
-      <span class="r">[5861]</span> <span class="k">StaticText</span> "Vancouver | Claude Code Build Day - Sep 19, 2026. ..."
-    <span class="r">[6026]</span> <span class="k">heading</span> "The 30, by what they do"
-    <span class="r">[6030]</span> <span class="k">heading</span> "Engineering 10"
-    <span class="r">[6104]</span> <span class="k">heading</span> "Claude Code experience"</pre>
+  <p>This is real <code>read_page</code> output for example.com. It is the page's accessibility tree, the same structure a screen reader uses.</p>
+<pre><span class="k">RootWebArea</span> "Example Domain" <span class="r">[ref_1]</span>
+  <span class="k">heading</span> "Example Domain" <span class="r">[ref_2]</span>
+  <span class="k">paragraph</span> <span class="r">[ref_3]</span>
+    <span class="k">StaticText</span> "This domain is for use in documentation examples without needing permission. ..." <span class="r">[ref_4]</span>
+  <span class="k">paragraph</span> <span class="r">[ref_5]</span>
+    <span class="k">link</span> "Learn more" <span class="r">[ref_6]</span></pre>
 </section>
 
 <section>
-  <h2>The ten tools</h2>
+  <h2>The twelve tools</h2>
+  <p>Names and input shapes are kept consistent with Claude for Chrome's.</p>
   <div class="tools">
     <table>
       <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
       <tbody>
-        <tr><td><code>list_tabs</code></td><td>Tabs the agent can see, and whether each one can be controlled</td></tr>
-        <tr><td><code>new_tab</code></td><td>Open a URL in a new tab, logged in as you</td></tr>
-        <tr><td><code>close_tab</code></td><td>Close a tab</td></tr>
-        <tr><td><code>navigate</code></td><td>Go to a URL and wait for the page to load</td></tr>
-        <tr><td><code>snapshot</code></td><td>Accessibility tree as text, with a ref on every element</td></tr>
-        <tr><td><code>click</code></td><td>Click a ref, or x and y coordinates</td></tr>
-        <tr><td><code>type</code></td><td>Type into the focused element or a ref, optionally press Enter</td></tr>
-        <tr><td><code>press_key</code></td><td>Enter, Tab, Escape, arrows, single characters</td></tr>
-        <tr><td><code>screenshot</code></td><td>JPEG of the visible page, for when layout matters</td></tr>
-        <tr><td><code>evaluate</code></td><td>Run JavaScript in the page and get the result back</td></tr>
+        <tr><td><code>tabs_context</code></td><td>Tabs the agent can see, and whether each one can be controlled</td></tr>
+        <tr><td><code>tabs_create</code></td><td>Open a new tab, logged in as you</td></tr>
+        <tr><td><code>tabs_close</code></td><td>Close a tab</td></tr>
+        <tr><td><code>navigate</code></td><td>Go to a URL, back or forward, and wait for the page to load</td></tr>
+        <tr><td><code>read_page</code></td><td>Accessibility tree as text, with a ref on every element</td></tr>
+        <tr><td><code>find</code></td><td>Look elements up by description, get refs back</td></tr>
+        <tr><td><code>get_page_text</code></td><td>The page's readable text, for articles and long pages</td></tr>
+        <tr><td><code>computer</code></td><td>Mouse and keyboard by ref or by pixel: clicks, typing, keys, scrolling, hover, drag, screenshot, zoom</td></tr>
+        <tr><td><code>form_input</code></td><td>Set a field's value directly: text, checkboxes, radios, dropdowns</td></tr>
+        <tr><td><code>javascript_tool</code></td><td>Run JavaScript in the page and get the result back</td></tr>
+        <tr><td><code>read_console_messages</code></td><td>Console output and uncaught errors, filterable</td></tr>
+        <tr><td><code>read_network_requests</code></td><td>Requests the page made, with status</td></tr>
       </tbody>
     </table>
   </div>
@@ -191,17 +192,7 @@ footer{color:var(--muted);font-size:14.5px;border-top:1px solid var(--line);padd
 
 <section>
   <h2>Which tabs the agent gets</h2>
-  <p>All of them. Every open tab in the browser is available, with no per-tab setup. Chrome's own pages, like <code>chrome://extensions</code>, show up in the list but cannot be read or controlled. Chrome does not allow it.</p>
-</section>
-
-<section>
-  <h2>Why it is built this way</h2>
-  <dl>
-    <div><dt>chrome.debugger instead of content scripts</dt><dd>It gives trusted input events, the accessibility tree and screenshots, and it works on any site. The cost is a "started debugging this browser" bar while it is attached.</dd></div>
-    <div><dt>A WebSocket instead of native messaging</dt><dd>Installing it stays a two-step job: add the extension, run one command. Native messaging needs a manifest file installed per operating system.</dd></div>
-    <div><dt>A thin extension</dt><dd>The extension only relays commands. The logic is in the server, so most changes need no extension reload.</dd></div>
-    <div><dt>Several agent sessions at once</dt><dd>The first server to start owns the port and the extension connection. Later ones join it as peers and get relayed. If the first one exits, a peer takes over and the extension reconnects in about two seconds.</dd></div>
-  </dl>
+  <p>Every open tab in the Chrome profile where the extension is loaded, and nothing from other profiles. Loading it in a separate profile is an easy way to keep an agent away from your main logins. Chrome's own pages, like <code>chrome://extensions</code>, show up in the list but cannot be read or controlled. Chrome does not allow it.</p>
 </section>
 
 <section>
@@ -213,16 +204,7 @@ footer{color:var(--muted);font-size:14.5px;border-top:1px solid var(--line);padd
   </ul>
 </section>
 
-<section>
-  <h2>Setup</h2>
-  <ol class="steps">
-    <li><b>Install the server's dependencies.</b><span><code>cd server &amp;&amp; npm install</code></span></li>
-    <li><b>Load the extension.</b><span>Open <code>chrome://extensions</code>, turn on Developer mode, choose "Load unpacked" and pick the <code>extension</code> folder.</span></li>
-    <li><b>Register the server with the agent.</b><span><code>claude mcp add -s user browser-bridge -- node &lt;repo&gt;/server/index.js</code></span></li>
-  </ol>
-</section>
-
-<footer>Built on Sep 19, 2026 at the Vancouver Claude Code Build Day.</footer>
+<footer>Browser Bridge is MIT licensed.</footer>
 </div>
 </body>
 </html>

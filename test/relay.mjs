@@ -59,6 +59,7 @@ class FakeExt {
     this.ws.on("close", () => { this.connected = false; if (this.reconnect) setTimeout(() => this.connect(), 300); });
     this.ws.on("message", (data) => {
       const m = JSON.parse(data);
+      if (m.type === "active") return void (this.active = m.value); // an announcement, not a request
       if (this.closeOnRequest) return this.ws.close();
       if (!this.answer) return;
       if (this.silentOn === m.type) return;
@@ -88,7 +89,7 @@ try {
   check("first server becomes primary", a.log.includes("primary"));
 
   const none = await a.tabsContext();
-  check("no extension: clear error after a short wait", none.err && none.txt.includes("not connected") && none.ms < 8000, `${none.ms}ms`);
+  check("no extension: clear error after the 12s grace period", none.err && none.txt.includes("not connected") && none.ms < 15000, `${none.ms}ms`);
 
   const lone = await new McpClient().init();
   const exited = new Promise((r) => lone.p.on("exit", () => r(true)));
@@ -126,9 +127,10 @@ try {
   two = await new FakeExt("two").connect().ready();
   await sleep(200);
   check("second profile connects: latest is active", (await activeName(a)) === "two");
+  check("each profile is told whether it is the one in use", one.active === false && two.active === true);
   one.activate();
   await sleep(200);
-  check("icon click (activate) switches profile", (await activeName(a)) === "one");
+  check("the popup's \"use this profile\" switches profile", (await activeName(a)) === "one" && one.active === true && two.active === false);
   one.close();
   await sleep(300);
   check("active profile closes: falls back to the other", (await activeName(a)) === "two");

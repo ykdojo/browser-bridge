@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  :root { color-scheme: light dark; --fg: #1d1d1f; --muted: #6b6b70; --line: #e3e3e6; --accent: #d4540f; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #f2f2f4; --muted: #a0a0a8; --line: #3a3a40; --accent: #f2903f; } }
+  body { font: 13px/1.45 -apple-system, system-ui, sans-serif; color: var(--fg); width: 280px; margin: 0; padding: 14px; }
+  header { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+  header img { width: 20px; height: 20px; }
+  header small { margin-left: auto; font-weight: 400; color: var(--muted); }
+  #status { display: flex; gap: 8px; margin: 12px 0 0; }
+  #dot { flex: none; width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; background: var(--muted); }
+  #dot.on { background: #2ea043; }
+  p { margin: 10px 0 0; color: var(--muted); }
+  #profile { display: none; align-items: center; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  button { font: inherit; margin-left: auto; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--line); background: none; color: var(--fg); cursor: pointer; }
+  a { color: var(--accent); text-decoration: none; }
+</style></head><body>
+  <header><img src="icons/icon48.png" alt=""><span>Browser Bridge</span><small id="version"></small></header>
+  <div id="status"><span id="dot"></span><span id="state">Checking...</span></div>
+  <div id="profile"><span id="which"></span><button id="use">Use this profile</button></div>
+  <p>Agents connected through Browser Bridge can see and control every tab in this Chrome profile, and none in other profiles. <a id="about" href="#">How it works</a></p>
+  <script src="popup.js"></script>
+</body></html>

@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // MCP server (stdio) that also hosts a localhost WebSocket for the Browser Bridge
 // extension. The extension connects out to us; we send it CDP commands.
-// Tool names and input shapes deliberately mirror Claude for Chrome's tool
-// surface, since models are tuned for those shapes.
+// Tool names and input shapes are kept consistent with Claude for Chrome's.
 import { readFileSync } from "fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -21,14 +20,19 @@ const olderThan = (a, b) => a.localeCompare(b, undefined, { numeric: true }) < 0
 // If the primary exits, a peer takes over the port and the extension reconnects.
 const NOT_CONNECTED = "Browser Bridge extension is not connected. Make sure Chrome is open and the extension is loaded, then retry in a few seconds.";
 // primary: every connected extension (one per Chrome profile that has it
-// loaded). The most recently connected one is active; clicking the extension
-// icon in another profile makes that profile active instead.
+// loaded). The most recently connected one is active; the extension's popup in
+// another profile can make that profile active instead.
 const exts = new Set();
 let ext = null; // primary: the active extension's socket
 let upstream = null; // peer: socket to the primary
 let nextId = 0;
 const pending = new Map();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Tell each connected profile whether it is the one in use, for its toolbar popup.
+function announce() {
+  for (const s of exts) if (s.readyState === 1) s.send(JSON.stringify({ type: "active", value: s === ext }));
+}
 
 function settle(m) {
   const p = pending.get(m.id);
@@ -44,8 +48,9 @@ function failPending(sock, reason) {
 }
 
 async function call(msg, timeoutMs = 30000) {
-  // Right after startup or a takeover the extension needs a moment to reconnect.
-  for (let i = 0; i < 20 && (ext ?? upstream)?.readyState !== 1; i++) await sleep(250);
+  // Right after startup or a takeover the extension needs a moment to reconnect:
+  // it retries every 10s at most, so wait a little longer than that.
+  for (let i = 0; i < 48 && (ext ?? upstream)?.readyState !== 1; i++) await sleep(250);
   const sock = ext ?? upstream;
   if (!sock || sock.readyState !== 1) throw new Error(NOT_CONNECTED);
   return new Promise((resolve, reject) => {
@@ -85,12 +90,14 @@ function start() {
     }
     exts.add(sock);
     ext = sock;
+    announce();
     log(`extension connected (${exts.size} connected)`);
     sock.on("message", (data) => {
       const m = JSON.parse(data);
       if (m.type === "activate") {
         ext = sock;
-        return log("extension activated by icon click");
+        announce();
+        return log("extension activated from its popup");
       }
       settle(m);
     });
@@ -98,6 +105,7 @@ function start() {
       exts.delete(sock);
       failPending(sock, "The Browser Bridge extension disconnected before answering. Retry in a few seconds.");
       if (ext === sock) ext = [...exts].at(-1) ?? null;
+      announce();
       log(`extension disconnected (${exts.size} connected)`);
     });
   });
@@ -133,6 +141,7 @@ async function cdp(tabId, method, params) {
 }
 
 function describeNotice(n) {
+  if (n.kind === "activated") return "This tab was in the background, so its browser window was switched to it: Chrome only processes mouse input for a visible tab.";
   if (n.kind === "filechooser") return "The page tried to open a file picker, which was suppressed: native file dialogs can't be operated through this bridge, and file uploads aren't supported.";
   if (n.kind === "dialog") {
     const what = `A JavaScript ${n.dialogType} dialog${n.message ? ` ("${n.message}")` : ""}`;
@@ -317,8 +326,31 @@ async function withFileChooserBlocked(tabId, fn) {
   }
 }
 
+// Chrome stops drawing a hidden tab, and mouse input waits on drawing: measured
+// on a background tab, a click took 5s and a wheel scroll never returned. So
+// mouse actions first make the tab the visible one in its window. That does not
+// take OS focus, and it is reported to the agent when it happens.
+async function ensureVisible(tabId) {
+  const r = await call({ type: "tabs.activate", tabId }).catch(() => null); // older extension: carry on as before
+  if (!r?.switched) return;
+  notices.set(tabId, [...(notices.get(tabId) ?? []), { kind: "activated" }]);
+  await sleep(250); // let it start drawing again
+}
+
+// Runs inside the page: scroll whatever a wheel at (x, y) would have scrolled.
+function pageScrollBy(x, y, dx, dy) {
+  let el = document.elementFromPoint(x, y);
+  for (; el && el !== document.documentElement; el = el.parentElement) {
+    const s = getComputedStyle(el);
+    if (dy && /(auto|scroll)/.test(s.overflowY) && el.scrollHeight > el.clientHeight) break;
+    if (dx && /(auto|scroll)/.test(s.overflowX) && el.scrollWidth > el.clientWidth) break;
+  }
+  (el && el !== document.documentElement ? el : window).scrollBy(dx, dy);
+}
+
 async function clickAt(tabId, x, y, { button = "left", clickCount = 1, modifiers = 0 } = {}) {
   await guard(tabId, x, y, button === "right" ? "right" : "left");
+  await ensureVisible(tabId);
   await withFileChooserBlocked(tabId, async () => {
     await mouse(tabId, "mouseMoved", x, y, { modifiers });
     await mouse(tabId, "mousePressed", x, y, { button, clickCount, modifiers });
@@ -656,7 +688,11 @@ tool("computer", "Use a mouse and keyboard to interact with the page in a tab, a
       const p = (await point(false)) ?? await evalJs(tabId, "({x: window.innerWidth/2, y: window.innerHeight/2})").then((r) => r.value);
       const d = (a.scroll_amount ?? 3) * 120;
       const [dx, dy] = { up: [0, -d], down: [0, d], left: [-d, 0], right: [d, 0] }[a.scroll_direction];
-      await mouse(tabId, "mouseWheel", p.x, p.y, { deltaX: dx, deltaY: dy });
+      await ensureVisible(tabId);
+      // Still hidden (minimized or fully covered window): a wheel event would
+      // never return, so move the scroll position from inside the page instead.
+      if ((await evalJs(tabId, "document.visibilityState")).value === "hidden") await evalJs(tabId, `(${pageScrollBy})(${p.x}, ${p.y}, ${dx}, ${dy})`);
+      else await mouse(tabId, "mouseWheel", p.x, p.y, { deltaX: dx, deltaY: dy });
       // The wheel event returns before the scroll lands; without this a
       // screenshot or read right after would still show the old position.
       await sleep(300);
@@ -669,12 +705,14 @@ tool("computer", "Use a mouse and keyboard to interact with the page in a tab, a
     }
     case "hover": {
       const p = await point();
+      await ensureVisible(tabId);
       await mouse(tabId, "mouseMoved", p.x, p.y);
       return text(`hovering at ${Math.round(p.x)},${Math.round(p.y)}`);
     }
     case "left_click_drag": {
       if (!a.start_coordinate || !a.coordinate) throw new Error("left_click_drag needs start_coordinate and coordinate");
       const [sx, sy] = a.start_coordinate, [ex, ey] = a.coordinate;
+      await ensureVisible(tabId);
       await mouse(tabId, "mouseMoved", sx, sy);
       await mouse(tabId, "mousePressed", sx, sy, { button: "left", clickCount: 1 });
       const steps = 8;
