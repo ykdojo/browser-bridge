@@ -26,7 +26,7 @@ Design choices:
 - **New tabs open in the background**, in the window the agent last worked in, and never in a window of their own. `tabs_create` keeps the tab you are looking at unless you ask the agent to work in the foreground (`active: true`). Every tool works on a hidden tab, mouse input included, so the agent never switches your window to its tab.
 - **The agent's tabs are marked.** Tabs it opens sit in a "🌉" tab group whose label is only ever true: "🌉 active" (orange) while a command ran in one of them in the last 30 seconds, "🌉 idle" (blue) after that, and "🌉 done" (grey) only once the agent calls `done` or the session ends. Idle never becomes done on a timer, since an agent thinks for seconds between commands. Your own tabs are never grouped.
 - **Quiet when idle.** With no server running the extension knocks with `fetch` every 2s, which Chrome doesn't log, and only then opens the WebSocket.
-- **Several profiles.** Each profile with the extension connects; the latest is active, and the toolbar popup can switch.
+- **Several profiles at once.** Each Chrome profile with the extension loaded connects, and the agent sees every profile's tabs in one `tabs_context` list, each tab labeled with its profile. It picks the profile whose sign-ins fit the task: a command goes to the profile that owns its tab, and `tabs_create` takes a `profile`.
 - **Origin check, not a token.** The extension ID is fixed, and the server only accepts connections whose `Origin` is that ID, which pages and other extensions can't forge. A local process could, so this isn't a defense against malware on the machine.
 - **Every tab, not a tab group.** The agent sees and works in any tab open in its profile. Claude for Chrome only reaches tabs in its own tab group, so a tab you already have open has to be dragged into that group, or Claude has to open a new one.
 
@@ -35,7 +35,7 @@ Known gaps: no per-origin allowlist or confirmations yet. `read_page` and `find`
 ## Setup
 
 1. `cd server && npm install`
-2. In Chrome, open `chrome://extensions`, turn on Developer mode, click "Load unpacked" and pick the `extension/` folder. The extension only reaches tabs in the Chrome profile it is loaded in.
+2. In Chrome, open `chrome://extensions`, turn on Developer mode, click "Load unpacked" and pick the `extension/` folder. The extension only reaches tabs in the Chrome profile it is loaded in; load it in each profile the agent should be able to use.
 3. Register the server with your MCP client, e.g. `claude mcp add -s user browser-bridge -- node <repo>/server/index.js`
 
 ### Updating

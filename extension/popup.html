@@ -10,13 +10,11 @@
   #dot { flex: none; width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; background: var(--muted); }
   #dot.on { background: #2ea043; }
   p { margin: 10px 0 0; color: var(--muted); }
-  #profile { display: none; align-items: center; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
   button { font: inherit; margin-left: auto; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--line); background: none; color: var(--fg); cursor: pointer; }
   a { color: var(--accent); text-decoration: none; }
 </style></head><body>
   <header><img src="icons/icon48.png" alt=""><span>Browser Bridge</span><small id="version"></small></header>
   <div id="status"><span id="dot"></span><span id="state">Checking...</span></div>
-  <div id="profile"><span id="which"></span><button id="use">Use this profile</button></div>
-  <p>Agents connected through Browser Bridge can see and control every tab in this Chrome profile, and none in other profiles. <a id="about" href="#">How it works</a></p>
+  <p>Agents connected through Browser Bridge can see and control every tab in this Chrome profile, and in any other profile that has the extension loaded. <a id="about" href="#">How it works</a></p>
   <script src="popup.js"></script>
 </body></html>

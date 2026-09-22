@@ -167,7 +167,7 @@ ourGroups().then((gs) => gs.filter((g) => g.title === ACTIVE.title).forEach((g) 
 // nothing automated can look. So it keeps what a person would see there:
 // uncaught errors, and (on request) what Chrome prints into its console, by
 // attaching the debugger to its own service worker. Read via "diagnostics".
-const self_ = { errors: [], console: [], target: null, droppedReplies: 0, isActive: null };
+const self_ = { errors: [], console: [], target: null, droppedReplies: 0 };
 const logError = (e) => self_.errors.push({ ts: Date.now(), message: String(e?.message ?? e) }) > 50 && self_.errors.shift();
 self.addEventListener("error", (e) => logError(e.error ?? e.message));
 self.addEventListener("unhandledrejection", (e) => logError(e.reason));
@@ -307,7 +307,6 @@ async function connect() {
   const ping = setInterval(() => sock.readyState === 1 && sock.send('{"type":"ping"}'), 20000);
   sock.onmessage = async (e) => {
     const msg = JSON.parse(e.data);
-    if (msg.type === "active") return void (self_.isActive = msg.value); // an announcement, not a request
     let reply;
     const working = msg.tabId != null && msg.type !== "tabs.close";
     if (working) showWorking(msg.tabId).catch(() => {});
@@ -327,7 +326,7 @@ async function connect() {
   };
   sock.onclose = () => {
     clearInterval(ping);
-    if (ws === sock) (ws = null), (self_.isActive = null);
+    if (ws === sock) ws = null;
     showDone().catch(() => {}); // the server exits with its client: the session is over
     setTimeout(connect, RETRY_MS);
   };
@@ -339,10 +338,8 @@ chrome.alarms.create("reconnect", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
-// The toolbar popup asks for status, and can make this profile the one the
-// server uses when the extension is loaded in several profiles.
+// The toolbar popup asks for status.
 chrome.runtime.onMessage.addListener((msg, sender, respond) => {
-  if (msg.type === "activate" && ws?.readyState === 1) ws.send('{"type":"activate"}');
-  respond({ connected: ws?.readyState === 1, isActive: self_.isActive, version: VERSION });
+  respond({ connected: ws?.readyState === 1, version: VERSION });
 });
 connect();

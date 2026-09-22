@@ -21,20 +21,19 @@ const olderThan = (a, b) => a.localeCompare(b, undefined, { numeric: true }) < 0
 // Later servers (other agent sessions) connect to it as peers and get relayed.
 // If the primary exits, a peer takes over the port and the extension reconnects.
 const NOT_CONNECTED = "Browser Bridge extension is not connected. Make sure Chrome is open and the extension is loaded, then retry in a few seconds.";
-// primary: every connected extension (one per Chrome profile that has it
-// loaded). The most recently connected one is active; the extension's popup in
-// another profile can make that profile active instead.
+// primary: every connected extension, one per Chrome profile that has it
+// loaded. All of them are in use at once: tabs_context lists every profile's
+// tabs, and a command goes to the profile that owns its tab. Chrome tab IDs
+// are unique across profiles, so a tab ID names its profile.
 const exts = new Set();
-let ext = null; // primary: the active extension's socket
+const tabOwner = new Map(); // tabId -> the extension socket whose profile has that tab
+const profileTabs = new Map(); // profile label -> tab IDs last seen there; a profile that reconnects keeps its label
+let nextProfile = 0;
 let upstream = null; // peer: socket to the primary
 let nextId = 0;
 const pending = new Map();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// Tell each connected profile whether it is the one in use, for its toolbar popup.
-function announce() {
-  for (const s of exts) if (s.readyState === 1) s.send(JSON.stringify({ type: "active", value: s === ext }));
-}
+const open = () => [...exts].filter((s) => s.readyState === 1);
 
 function settle(m) {
   const p = pending.get(m.id);
@@ -49,18 +48,74 @@ function failPending(sock, reason) {
   for (const [id, p] of pending) if (p.sock === sock) (pending.delete(id), p.reject(new Error(reason)));
 }
 
-async function call(msg, timeoutMs = 30000) {
-  // Right after startup or a takeover the extension needs a moment to reconnect.
-  // It looks for us every 2s while awake; allow for a slow start.
-  for (let i = 0; i < 48 && (ext ?? upstream)?.readyState !== 1; i++) await sleep(250);
-  const sock = ext ?? upstream;
-  if (!sock || sock.readyState !== 1) throw new Error(NOT_CONNECTED);
+function send(sock, msg, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const id = ++nextId;
     const t = setTimeout(() => pending.delete(id) && reject(new Error("timed out waiting for the extension")), timeoutMs);
     pending.set(id, { sock, resolve: (v) => (clearTimeout(t), resolve(v)), reject: (e) => (clearTimeout(t), reject(e)) });
     sock.send(JSON.stringify({ ...msg, id }));
   });
+}
+
+// Every profile's tabs, each tagged with its profile label. Also the moment a
+// new socket gets its label: the profile whose tabs it has, or a fresh one.
+async function listTabs() {
+  for (let i = 0; i < 48 && !open().length; i++) await sleep(250); // same grace as call()
+  const socks = open();
+  if (!socks.length) throw new Error(NOT_CONNECTED);
+  const answers = await Promise.allSettled(socks.map((s) => send(s, { type: "tabs.list" })));
+  const tabs = [];
+  let failed = null;
+  answers.forEach((a, i) => {
+    if (a.status === "rejected") return void (failed ??= a.reason);
+    const sock = socks[i];
+    const ids = a.value.map((t) => t.tabId);
+    if (!sock.profile) sock.profile = [...profileTabs].find(([, seen]) => ids.some((id) => seen.has(id)))?.[0] ?? `profile-${++nextProfile}`;
+    profileTabs.set(sock.profile, new Set(ids));
+    for (const t of a.value) (tabOwner.set(t.tabId, sock), tabs.push({ ...t, profile: sock.profile }));
+  });
+  if (failed && tabs.length === 0) throw failed;
+  for (const [id, s] of tabOwner) if (!socks.includes(s) || !profileTabs.get(s.profile)?.has(id)) tabOwner.delete(id);
+  return tabs;
+}
+
+// Which profile a message is for: the one owning its tab, the one it names,
+// the one the agent last worked in, else the most recently connected.
+async function route(msg) {
+  if (msg.tabId != null) {
+    if (tabOwner.get(msg.tabId)?.readyState !== 1) await listTabs().catch(() => {});
+    const s = tabOwner.get(msg.tabId);
+    if (!s) throw new Error(`No open tab has ID ${msg.tabId}. Call tabs_context for the current tabs.`);
+    return s;
+  }
+  if (msg.profile) {
+    const s = open().find((x) => x.profile === msg.profile);
+    if (!s) throw new Error(`No connected Chrome profile is labeled "${msg.profile}". Call tabs_context for the current profile labels.`);
+    return s;
+  }
+  if (msg.nearTabId != null && tabOwner.get(msg.nearTabId)?.readyState === 1) return tabOwner.get(msg.nearTabId);
+  return open().at(-1) ?? null;
+}
+
+async function call(msg, timeoutMs = 30000) {
+  // Right after startup or a takeover the extension needs a moment to reconnect.
+  // It looks for us every 2s while awake; allow for a slow start.
+  for (let i = 0; i < 48 && upstream?.readyState !== 1 && !open().length; i++) await sleep(250);
+  const sock = upstream ?? (await route(msg));
+  if (!sock || sock.readyState !== 1) throw new Error(NOT_CONNECTED);
+  return send(sock, msg, timeoutMs);
+}
+
+// The same message to every profile (peers ask the primary to do it).
+async function broadcast(msg, timeoutMs) {
+  if (upstream) return call({ ...msg, broadcast: true }, timeoutMs);
+  for (let i = 0; i < 48 && !open().length; i++) await sleep(250);
+  const socks = open();
+  if (!socks.length) throw new Error(NOT_CONNECTED);
+  const answers = await Promise.allSettled(socks.map((s) => send(s, msg, timeoutMs)));
+  const ok = answers.filter((a) => a.status === "fulfilled").map((a) => a.value);
+  if (!ok.length) throw answers[0].reason;
+  return ok;
 }
 
 function start() {
@@ -91,9 +146,9 @@ function start() {
   wss.on("connection", (sock, req) => {
     if (req.headers["x-bridge-peer"] === "1") {
       sock.on("message", async (data) => {
-        const { id, ...msg } = JSON.parse(data);
+        const { id, broadcast: all, ...msg } = JSON.parse(data);
         try {
-          sock.send(JSON.stringify({ id, result: await call(msg) }));
+          sock.send(JSON.stringify({ id, result: await (all ? broadcast(msg) : msg.type === "tabs.list" ? listTabs() : call(msg)) }));
         } catch (e) {
           sock.send(JSON.stringify({ id, error: String(e?.message ?? e) }));
         }
@@ -101,23 +156,12 @@ function start() {
       return;
     }
     exts.add(sock);
-    ext = sock;
-    announce();
     log(`extension connected (${exts.size} connected)`);
-    sock.on("message", (data) => {
-      const m = JSON.parse(data);
-      if (m.type === "activate") {
-        ext = sock;
-        announce();
-        return log("extension activated from its popup");
-      }
-      settle(m);
-    });
+    listTabs().then(() => log(`profile ${sock.profile} ready`), () => {}); // label it now, so tabs_create can name it
+    sock.on("message", (data) => settle(JSON.parse(data)));
     sock.on("close", () => {
       exts.delete(sock);
       failPending(sock, "The Browser Bridge extension disconnected before answering. Retry in a few seconds.");
-      if (ext === sock) ext = [...exts].at(-1) ?? null;
-      announce();
       log(`extension disconnected (${exts.size} connected)`);
     });
   });
@@ -486,11 +530,13 @@ const refParam = z.string().describe('Element reference ID from the read_page or
 
 const controllable = (url) => /^(https?|file):/.test(url) && !/^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/.test(url);
 
-tool("tabs_context", "Get context information about all open tabs in the user's Chrome: tab IDs, titles, URLs and which tab is active. Call this before other browser tools so you know what tabs exist, and call done when you have finished with the browser. Tabs marked controllable: false (browser pages like chrome://) can be seen but not read or acted on.", {}, async () => {
-  const tabs = await call({ type: "tabs.list" });
+tool("tabs_context", "Get context information about all open tabs in the user's Chrome: tab IDs, titles, URLs, which tab is active, and which Chrome profile each tab belongs to. Call this before other browser tools so you know what tabs exist, and call done when you have finished with the browser. Tabs marked controllable: false (browser pages like chrome://) can be seen but not read or acted on. When several profiles are listed, each has its own sign-ins: work in the tab, or create a tab in the profile, whose sign-ins fit the task.", {}, async () => {
+  const tabs = upstream ? await call({ type: "tabs.list" }) : await listTabs();
   const result = text(tabs.map((t) => ({ ...t, controllable: controllable(t.url) })));
+  const profiles = [...new Set(tabs.map((t) => t.profile))];
+  if (profiles.length > 1) result.content.push({ type: "text", text: `${profiles.length} Chrome profiles are connected (${profiles.join(", ")}), each signed in to its own accounts. Choose by what the task needs; tabs_create takes a profile.` });
   // The server and the unpacked extension update separately; say so when they drift.
-  const v = await call({ type: "version" }).then((r) => r?.version ?? "0", () => "0");
+  const v = await broadcast({ type: "version" }).then((rs) => rs.map((r) => r?.version ?? "0").sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))[0] ?? "0", () => "0");
   if (olderThan(v, MIN_EXTENSION)) result.content.push({ type: "text", text: `Note: the Browser Bridge extension loaded in Chrome (${v === "0" ? "older than 0.6.0" : v}) is older than this server expects (${MIN_EXTENSION}). Until it is reloaded at chrome://extensions, JavaScript dialogs can freeze a tab and file-picker suppression goes unreported.` });
   return result;
 });
@@ -499,11 +545,16 @@ tool("tabs_context", "Get context information about all open tabs in the user's 
 // they were looking at, and every tool works on a hidden tab.
 tool("tabs_create", "Creates a new empty tab in the user's Chrome, next to the tab you last worked in and in the 🌉 tab group, and returns its tab ID. Call done when you have finished with the browser. Use navigate to load a URL in it. The tab opens in the background so the user keeps the tab they are looking at; pass active: true only when the user has asked to watch you work.", {
   active: z.boolean().optional().describe("Bring the new tab to the foreground. Default false. Use only when the user asked to watch."),
-}, async ({ active = false }) =>
-  text(await call({ type: "tabs.create", url: "about:blank", active, nearTabId: lastTabId })));
+  profile: z.string().optional().describe("Which Chrome profile to open the tab in, by the profile label tabs_context shows. Default: the profile of the tab you last worked in, else the most recently connected profile."),
+}, async ({ active = false, profile }) => {
+  // A tab from another profile can't place the new one, so only pass it when it fits.
+  const near = !profile || (await profileOf(lastTabId)) === profile ? lastTabId : null;
+  return text(await call({ type: "tabs.create", url: "about:blank", active, nearTabId: near, profile }));
+});
+const profileOf = async (tabId) => (tabId == null ? null : upstream ? (await call({ type: "tabs.list" })).find((t) => t.tabId === tabId)?.profile : (tabOwner.get(tabId)?.profile ?? null));
 
-tool("done", "Tell the user you have finished with the browser: the 🌉 tab group turns from active or idle to done. Call it once the browser part of a task is complete, so the user can see the tabs are free to look at or close. Working in a tab again turns the group active.", {}, async () =>
-  text(await call({ type: "groups.done" })));
+tool("done", "Tell the user you have finished with the browser: the 🌉 tab group turns from active or idle to done, in every profile. Call it once the browser part of a task is complete, so the user can see the tabs are free to look at or close. Working in a tab again turns the group active.", {}, async () =>
+  text((await broadcast({ type: "groups.done" }))[0]));
 
 tool("tabs_close", "Close a tab by its tab ID. Get valid IDs from tabs_context.", { tabId: tabIdParam }, async ({ tabId }) => {
   await silencePrompt(tabId); // closing is leaving; the extension also accepts a prompt that shows regardless

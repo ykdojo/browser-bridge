@@ -12,7 +12,7 @@ How this repo is tested, and a log of what testing found. Newest first.
 - Origin check rejects pages, other extensions and header-less clients
 - No extension: clear error after 12s, not a hang. Drops mid-call fail in milliseconds
 - Server exits when its client goes away (no orphans)
-- Two profiles: latest is active, each is told which, the popup switch works, fallback when one closes
+- Two profiles: both listed with profile labels, a command reaches the profile owning its tab, `tabs_create` targets a profile, a label survives a reconnect, one closing leaves the other
 - Notices reach the tool result once, including through a peer
 - Outdated extension is called out; a stuck `tabs_close` explains itself after 10s
 

@@ -59,7 +59,7 @@ class McpClient {
 }
 
 class FakeExt {
-  constructor(name, { reconnect = false } = {}) { this.name = name; this.reconnect = reconnect; this.answer = true; this.closeOnRequest = false; this.connected = false; }
+  constructor(name, { reconnect = false, tabId = 1 } = {}) { this.name = name; this.tabId = tabId; this.reconnect = reconnect; this.answer = true; this.closeOnRequest = false; this.connected = false; this.got = []; }
   connect() {
     this.ws = new WebSocket(URL_, { origin: EXT_ORIGIN });
     this.ws.on("open", () => (this.connected = true));
@@ -67,19 +67,18 @@ class FakeExt {
     this.ws.on("close", () => { this.connected = false; if (this.reconnect) setTimeout(() => this.connect(), 300); });
     this.ws.on("message", (data) => {
       const m = JSON.parse(data);
-      if (m.type === "active") return void (this.active = m.value); // an announcement, not a request
+      this.got.push(m.type);
       if (this.closeOnRequest) return this.ws.close();
       if (!this.answer) return;
       if (this.silentOn === m.type) return;
       if (m.type === "cdp" && this.cdpReply) return this.ws.send(JSON.stringify({ id: m.id, result: this.cdpReply(m) }));
       if (m.type === "version" && !this.version) return this.ws.send(JSON.stringify({ id: m.id, error: "unknown message type version" })); // like a pre-0.6 extension
-      const result = m.type === "tabs.list" ? [{ tabId: 1, title: this.name, url: `https://fake/${this.name}`, active: true }] : m.type === "version" ? { version: this.version } : { ok: true };
+      const result = m.type === "tabs.list" ? [{ tabId: this.tabId, title: this.name, url: `https://fake/${this.name}`, active: true }] : m.type === "version" ? { version: this.version } : m.type === "tabs.create" ? { tabId: this.tabId * 10 } : { ok: true };
       this.ws.send(JSON.stringify({ id: m.id, result }));
     });
     return this;
   }
   async ready() { for (let i = 0; i < 50 && !this.connected; i++) await sleep(100); return this; }
-  activate() { this.ws.send('{"type":"activate"}'); }
   close() { this.reconnect = false; this.ws.close(); }
 }
 
@@ -89,7 +88,8 @@ const rejected = (opts) => new Promise((res) => {
   ws.on("error", () => res(true));
   ws.on("unexpected-response", () => res(true));
 });
-const activeName = async (client) => { const r = await client.tabsContext(); try { return JSON.parse(r.txt)[0].title; } catch { return "ERR: " + r.txt.slice(0, 80); } };
+const listed = async (client) => { const r = await client.tabsContext(); try { return JSON.parse(r.txt); } catch { return [{ title: "ERR: " + r.txt.slice(0, 80) }]; } };
+const activeName = async (client) => (await listed(client))[0].title;
 
 const a = await new McpClient().init();
 let b, one, two, three;
@@ -132,22 +132,35 @@ try {
   check("notices survive the relay to a peer", (await b.tool("javascript_tool", { action: "javascript_exec", tabId: 1, text: "1 + 1" })).all.includes("file picker"));
   one.cdpReply = null;
 
-  two = await new FakeExt("two").connect().ready();
+  two = await new FakeExt("two", { tabId: 2 }).connect().ready();
   await sleep(200);
-  check("second profile connects: latest is active", (await activeName(a)) === "two");
-  check("each profile is told whether it is the one in use", one.active === false && two.active === true);
-  one.activate();
-  await sleep(200);
-  check("the popup's \"use this profile\" switches profile", (await activeName(a)) === "one" && one.active === true && two.active === false);
+  let tabs = await listed(a);
+  check("second profile connects: both profiles' tabs are listed, labeled", tabs.map((t) => `${t.title}@${t.profile}`).join() === "one@profile-1,two@profile-2", JSON.stringify(tabs));
+  check("the listing says several profiles are connected", (await a.tabsContext()).all.includes("2 Chrome profiles"));
+  one.got = []; two.got = [];
+  await b.tool("javascript_tool", { action: "javascript_exec", tabId: 2, text: "1" });
+  check("a command reaches the profile that owns its tab (via a peer)", two.got.includes("cdp") && !one.got.includes("cdp"), `one=${one.got} two=${two.got}`);
+  one.got = []; two.got = [];
+  const made = await a.tool("tabs_create", { profile: "profile-1" });
+  check("tabs_create targets the named profile", one.got.includes("tabs.create") && !two.got.includes("tabs.create") && made.txt.includes("10"), `one=${one.got} two=${two.got} ${made.txt}`);
+  const bad = await a.tool("tabs_create", { profile: "profile-9" });
+  check("tabs_create with an unknown profile label says so", bad.err && bad.txt.includes("profile-9"));
+  const gone = await a.tool("javascript_tool", { action: "javascript_exec", tabId: 77, text: "1" });
+  check("a command for a tab no profile has says so", gone.err && gone.txt.includes("No open tab has ID 77"), gone.txt.slice(0, 80));
   one.close();
   await sleep(300);
-  check("active profile closes: falls back to the other", (await activeName(a)) === "two");
+  check("a profile closes: the other stays, unlabeled changes nothing", (await listed(a)).map((t) => `${t.title}@${t.profile}`).join() === "two@profile-2");
+  one = await new FakeExt("one", { tabId: 1 }).connect().ready();
+  await sleep(300);
+  check("a profile that reconnects keeps its label", (await listed(a)).map((t) => `${t.title}@${t.profile}`).sort().join() === "one@profile-1,two@profile-2");
+  one.close();
+  await sleep(300);
 
   two.closeOnRequest = true;
   const dropped = await a.tabsContext();
   check("extension drops mid-call: fails fast, no 30s hang", dropped.err && dropped.txt.includes("disconnected") && dropped.ms < 8000, `${dropped.ms}ms`);
 
-  three = await new FakeExt("three", { reconnect: true }).connect().ready();
+  three = await new FakeExt("three", { reconnect: true, tabId: 3 }).connect().ready();
   check("extension reconnects after a drop", (await activeName(b)) === "three");
 
   three.answer = false;
